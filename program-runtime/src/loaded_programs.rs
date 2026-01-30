@@ -308,6 +308,7 @@ impl PartialEq for ProgramCacheEntry {
 impl ProgramCacheEntry {
     /// Creates a new user program
     pub fn new(
+        program_id: &Pubkey,
         loader_key: &Pubkey,
         program_runtime_environment: ProgramRuntimeEnvironment,
         deployment_slot: Slot,
@@ -317,6 +318,7 @@ impl ProgramCacheEntry {
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_internal(
+            program_id,
             loader_key,
             program_runtime_environment,
             deployment_slot,
@@ -338,6 +340,7 @@ impl ProgramCacheEntry {
     /// unloaded due to inactivity. It should also be checked that the `program_runtime_environment`
     /// hasn't changed since it was unloaded.
     pub unsafe fn reload(
+        program_id: &Pubkey,
         loader_key: &Pubkey,
         program_runtime_environment: Arc<BuiltinProgram<InvokeContext<'static, 'static>>>,
         deployment_slot: Slot,
@@ -347,6 +350,7 @@ impl ProgramCacheEntry {
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_internal(
+            program_id,
             loader_key,
             program_runtime_environment,
             deployment_slot,
@@ -360,6 +364,7 @@ impl ProgramCacheEntry {
     }
 
     fn new_internal(
+        program_id: &Pubkey,
         loader_key: &Pubkey,
         program_runtime_environment: Arc<BuiltinProgram<InvokeContext<'static, 'static>>>,
         deployment_slot: Slot,
@@ -398,6 +403,7 @@ impl ProgramCacheEntry {
             #[cfg(feature = "metrics")]
             {
                 metrics.jit_compile_us = jit_compile_time.end_as_us();
+                log::warn!("program={} jit_compile={}", program_id, metrics.jit_compile_us);
             }
         }
 

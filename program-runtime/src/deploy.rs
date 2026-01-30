@@ -50,6 +50,7 @@ pub fn load_program_from_bytes(
     log_collector: Option<Rc<RefCell<LogCollector>>>,
     #[cfg(feature = "metrics")] load_program_metrics: &mut LoadProgramMetrics,
     programdata: &[u8],
+    program_id: &Pubkey,
     loader_key: &Pubkey,
     account_size: usize,
     deployment_slot: Slot,
@@ -61,6 +62,7 @@ pub fn load_program_from_bytes(
         // Safety: this is safe because the program is being reloaded in the cache.
         unsafe {
             ProgramCacheEntry::reload(
+                program_id,
                 loader_key,
                 program_runtime_environment,
                 deployment_slot,
@@ -73,6 +75,7 @@ pub fn load_program_from_bytes(
         }
     } else {
         ProgramCacheEntry::new(
+            program_id,
             loader_key,
             program_runtime_environment,
             deployment_slot,
@@ -150,6 +153,7 @@ pub fn deploy_program(
         #[cfg(feature = "metrics")]
         load_program_metrics,
         programdata,
+        program_id,
         loader_key,
         account_size,
         deployment_slot,

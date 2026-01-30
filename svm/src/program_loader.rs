@@ -29,6 +29,7 @@ pub(crate) enum ProgramAccountLoadResult {
 pub(crate) fn load_program_from_bytes(
     load_program_metrics: &mut LoadProgramMetrics,
     programdata: &[u8],
+    program_id: &Pubkey,
     loader_key: &Pubkey,
     account_size: usize,
     deployment_slot: Slot,
@@ -39,6 +40,7 @@ pub(crate) fn load_program_from_bytes(
         // Safety: this is safe because the program is being reloaded in the cache.
         unsafe {
             ProgramCacheEntry::reload(
+                program_id,
                 loader_key,
                 program_runtime_environment,
                 deployment_slot,
@@ -50,6 +52,7 @@ pub(crate) fn load_program_from_bytes(
         }
     } else {
         ProgramCacheEntry::new(
+            program_id,
             loader_key,
             program_runtime_environment,
             deployment_slot,
@@ -142,6 +145,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
         ProgramAccountLoadResult::ProgramOfLoaderV1(program_account) => load_program_from_bytes(
             &mut load_program_metrics,
             program_account.data(),
+            pubkey,
             program_account.owner(),
             program_account.data().len(),
             0,
@@ -153,6 +157,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
         ProgramAccountLoadResult::ProgramOfLoaderV2(program_account) => load_program_from_bytes(
             &mut load_program_metrics,
             program_account.data(),
+            pubkey,
             program_account.owner(),
             program_account.data().len(),
             0,
@@ -173,6 +178,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
                 load_program_from_bytes(
                     &mut load_program_metrics,
                     programdata,
+                    pubkey,
                     program_account.owner(),
                     program_account
                         .data()
@@ -194,6 +200,7 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
                     load_program_from_bytes(
                         &mut load_program_metrics,
                         elf_bytes,
+                        pubkey,
                         &loader_v4::id(),
                         program_account.data().len(),
                         deployment_slot,
@@ -491,6 +498,7 @@ mod tests {
             &mut metrics,
             &buffer,
             &loader,
+            &loader,
             size,
             slot,
             environment.clone(),
@@ -502,6 +510,7 @@ mod tests {
         let result = load_program_from_bytes(
             &mut metrics,
             &buffer,
+            &loader,
             &loader,
             size,
             slot,

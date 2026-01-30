@@ -53,6 +53,7 @@ pub fn add_program(
     );
 
     let entry = ProgramCacheEntry::new(
+        program_id,
         loader_key,
         program_runtime_environment,
         0, // deployment_slot

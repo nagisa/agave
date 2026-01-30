@@ -248,7 +248,13 @@ pub fn execute<'a, 'b: 'a>(
         invoke_context.insert_register_trace(register_trace);
         if let Some(execute_time) = invoke_context.execute_time.as_mut() {
             execute_time.stop();
-            invoke_context.timings.execute_us += execute_time.as_us();
+            let micros = execute_time.as_us();
+            if executable.get_compiled_program().is_some() {
+                log::warn!("program={program_id} jit_execute={micros}");
+            } else {
+                log::warn!("program={program_id} int_execute={micros}");
+            }
+            invoke_context.timings.execute_us += micros;
         }
 
         ic_logger_msg!(
