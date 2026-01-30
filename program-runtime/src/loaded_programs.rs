@@ -390,16 +390,16 @@ impl ProgramCacheEntry {
             }
         }
 
-        #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
-        {
-            #[cfg(feature = "metrics")]
-            let jit_compile_time = Measure::start("jit_compile_time");
-            executable.jit_compile()?;
-            #[cfg(feature = "metrics")]
-            {
-                metrics.jit_compile_us = jit_compile_time.end_as_us();
-            }
-        }
+        // #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
+        // {
+        //     #[cfg(feature = "metrics")]
+        //     let jit_compile_time = Measure::start("jit_compile_time");
+        //     executable.jit_compile()?;
+        //     #[cfg(feature = "metrics")]
+        //     {
+        //         metrics.jit_compile_us = jit_compile_time.end_as_us();
+        //     }
+        // }
 
         Ok(Self {
             deployment_slot,
@@ -826,7 +826,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         program_runtime_environments: &ProgramRuntimeEnvironments,
         key: Pubkey,
         _last_modification_slot: Slot,
-        entry: Arc<ProgramCacheEntry>,
+        mut entry: Arc<ProgramCacheEntry>,
     ) -> bool {
         debug_assert!(!matches!(
             &entry.program,
@@ -901,6 +901,16 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                     }
                     Err(index) => {
                         self.stats.insertions.fetch_add(1, Ordering::Relaxed);
+                        #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
+                        if let ProgramCacheEntryType::Loaded(e) = &entry.program {
+                            if e.get_compiled_program().is_none() {
+                                use solana_svm_measure::measure_us;
+                                let micros = measure_us!({
+                                    e.jit_compile().expect("compile failure unreachable");
+                                }).1;
+                                log::warn!("program={key} jit_compile={micros}");
+                            }
+                        }
                         slot_versions.insert(index, Arc::clone(&entry));
                     }
                 }
