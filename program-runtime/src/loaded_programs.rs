@@ -846,90 +846,78 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                 })
                 .unwrap_or(true)
         }
-        match &mut self.index {
-            IndexImplementation::V1 { entries, .. } => {
-                let slot_versions = &mut entries.entry(key).or_default();
-                match slot_versions.binary_search_by(|at| {
-                    at.effective_slot
-                        .cmp(&entry.effective_slot)
-                        .then(at.deployment_slot.cmp(&entry.deployment_slot))
-                        .then(
-                            // This `.then()` has no effect during normal operation.
-                            // Only during the cache preparation phase this does allow entries
-                            // which only differ in their environment to be interleaved in `slot_versions`.
-                            is_current_env(
-                                program_runtime_environments,
-                                at.program.get_environment(),
-                            )
-                            .cmp(&is_current_env(
-                                program_runtime_environments,
-                                entry.program.get_environment(),
-                            )),
-                        )
-                }) {
-                    Ok(index) => {
-                        let existing = slot_versions.get_mut(index).unwrap();
-                        match (&existing.program, &entry.program) {
-                            (
-                                ProgramCacheEntryType::Builtin(_),
-                                ProgramCacheEntryType::Builtin(_),
-                            )
-                            | (
-                                ProgramCacheEntryType::Unloaded(_),
-                                ProgramCacheEntryType::Loaded(_),
-                            ) => {}
-                            (ProgramCacheEntryType::Closed, ProgramCacheEntryType::Closed)
-                                if existing.account_owner != entry.account_owner => {}
-                            _ => {
-                                // Something is wrong, I can feel it ...
-                                error!(
-                                    "ProgramCache::assign_program() failed key={key:?} \
-                                     existing={slot_versions:?} entry={entry:?}"
-                                );
-                                debug_assert!(false, "Unexpected replacement of an entry");
-                                self.stats.replacements.fetch_add(1, Ordering::Relaxed);
-                                return true;
-                            }
-                        }
-                        // Copy over the usage counter to the new entry
-                        entry.tx_usage_counter.fetch_add(
-                            existing.tx_usage_counter.load(Ordering::Relaxed),
-                            Ordering::Relaxed,
+        let IndexImplementation::V1 { entries, .. } = &mut self.index;
+        let slot_versions = &mut entries.entry(key).or_default();
+        let insertion_point = slot_versions.binary_search_by(|at| {
+            at.effective_slot
+                .cmp(&entry.effective_slot)
+                .then(at.deployment_slot.cmp(&entry.deployment_slot))
+                .then(
+                    // This `.then()` has no effect during normal operation.
+                    // Only during the cache preparation phase this does allow entries
+                    // which only differ in their environment to be interleaved in `slot_versions`.
+                    is_current_env(program_runtime_environments, at.program.get_environment()).cmp(
+                        &is_current_env(
+                            program_runtime_environments,
+                            entry.program.get_environment(),
+                        ),
+                    ),
+                )
+        });
+        match insertion_point {
+            Ok(index) => {
+                let existing = slot_versions.get_mut(index).unwrap();
+                match (&existing.program, &entry.program) {
+                    (ProgramCacheEntryType::Builtin(_), ProgramCacheEntryType::Builtin(_))
+                    | (ProgramCacheEntryType::Unloaded(_), ProgramCacheEntryType::Loaded(_)) => {}
+                    (ProgramCacheEntryType::Closed, ProgramCacheEntryType::Closed)
+                        if existing.account_owner != entry.account_owner => {}
+                    _ => {
+                        // Something is wrong, I can feel it ...
+                        error!(
+                            "ProgramCache::assign_program() failed key={key:?} \
+                             existing={slot_versions:?} entry={entry:?}"
                         );
-                        *existing = Arc::clone(&entry);
-                        self.stats.reloads.fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(index) => {
-                        self.stats.insertions.fetch_add(1, Ordering::Relaxed);
-                        slot_versions.insert(index, Arc::clone(&entry));
+                        debug_assert!(false, "Unexpected replacement of an entry");
+                        self.stats.replacements.fetch_add(1, Ordering::Relaxed);
+                        return true;
                     }
                 }
-                // Remove existing entries in the same deployment slot unless they are for a different environment.
-                // This overwrites the current status of a program in program management instructions.
-                slot_versions.retain(|existing| {
-                    existing.deployment_slot != entry.deployment_slot
-                        || existing
-                            .program
-                            .get_environment()
-                            .zip(entry.program.get_environment())
-                            .map(|(a, b)| !Arc::ptr_eq(a, b))
-                            .unwrap_or(false)
-                        || existing == &entry
-                });
+                // Copy over the usage counter to the new entry
+                entry.tx_usage_counter.fetch_add(
+                    existing.tx_usage_counter.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
+                *existing = Arc::clone(&entry);
+                self.stats.reloads.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(index) => {
+                self.stats.insertions.fetch_add(1, Ordering::Relaxed);
+                slot_versions.insert(index, Arc::clone(&entry));
             }
         }
+        // Remove existing entries in the same deployment slot unless they are for a different
+        // environment.
+        // This overwrites the current status of a program in program management instructions.
+        slot_versions.retain(|existing| {
+            existing.deployment_slot != entry.deployment_slot
+                || existing
+                    .program
+                    .get_environment()
+                    .zip(entry.program.get_environment())
+                    .map(|(a, b)| !Arc::ptr_eq(a, b))
+                    .unwrap_or(false)
+                || existing == &entry
+        });
         false
     }
 
     pub fn prune_by_deployment_slot(&mut self, slot: Slot) {
-        match &mut self.index {
-            IndexImplementation::V1 { entries, .. } => {
-                for second_level in entries.values_mut() {
-                    second_level.retain(|entry| entry.deployment_slot != slot);
-                }
-                self.remove_programs_with_no_entries();
-            }
+        let IndexImplementation::V1 { entries, .. } = &mut self.index;
+        for second_level in entries.values_mut() {
+            second_level.retain(|entry| entry.deployment_slot != slot);
         }
+        self.remove_programs_with_no_entries();
     }
 
     /// Before rerooting the blockstore this removes all superfluous entries
@@ -947,64 +935,61 @@ impl<FG: ForkGraph> ProgramCache<FG> {
             error!("Failed to lock fork graph for reading.");
             return;
         };
-        match &mut self.index {
-            IndexImplementation::V1 { entries, .. } => {
-                for second_level in entries.values_mut() {
-                    // Remove entries un/re/deployed on orphan forks
-                    let mut first_ancestor_found = false;
-                    let mut first_ancestor_env = None;
-                    *second_level = second_level
-                        .iter()
-                        .rev()
-                        .filter(|entry| {
-                            let relation =
-                                fork_graph.relationship(entry.deployment_slot, new_root_slot);
-                            if entry.deployment_slot >= new_root_slot {
-                                matches!(relation, BlockRelation::Equal | BlockRelation::Descendant)
-                            } else if matches!(relation, BlockRelation::Ancestor)
-                                || entry.deployment_slot <= self.latest_root_slot
-                            {
-                                if !first_ancestor_found {
-                                    first_ancestor_found = true;
-                                    first_ancestor_env = entry.program.get_environment();
-                                    return true;
-                                }
-                                // Do not prune the entry if the runtime environment of the entry is different
-                                // than the entry that was previously found (stored in first_ancestor_env).
-                                // Different environment indicates that this entry might belong to an older
-                                // epoch that had a different environment (e.g. different feature set).
-                                // Once the root moves to the new/current epoch, the entry will get pruned.
-                                // But, until then the entry might still be getting used by an older slot.
-                                if let Some(entry_env) = entry.program.get_environment()
-                                    && let Some(env) = first_ancestor_env
-                                    && !Arc::ptr_eq(entry_env, env)
-                                {
-                                    return true;
-                                }
-                                self.stats.prunes_orphan.fetch_add(1, Ordering::Relaxed);
-                                false
-                            } else {
-                                self.stats.prunes_orphan.fetch_add(1, Ordering::Relaxed);
-                                false
-                            }
-                        })
-                        .filter(|entry| {
-                            // Remove outdated environment of previous feature set
-                            if let Some(upcoming_environments) = upcoming_environments.as_ref()
-                                && !Self::matches_environment(entry, upcoming_environments)
-                            {
-                                self.stats
-                                    .prunes_environment
-                                    .fetch_add(1, Ordering::Relaxed);
-                                return false;
-                            }
-                            true
-                        })
-                        .cloned()
-                        .collect();
-                    second_level.reverse();
-                }
-            }
+        let IndexImplementation::V1 { entries, .. } = &mut self.index;
+        for second_level in entries.values_mut() {
+            // Remove entries un/re/deployed on orphan forks
+            let mut first_ancestor_found = false;
+            let mut first_ancestor_env = None;
+            *second_level = second_level
+                .iter()
+                .rev()
+                .filter(|entry| {
+                    let relation = fork_graph.relationship(entry.deployment_slot, new_root_slot);
+                    if entry.deployment_slot >= new_root_slot {
+                        matches!(relation, BlockRelation::Equal | BlockRelation::Descendant)
+                    } else if matches!(relation, BlockRelation::Ancestor)
+                        || entry.deployment_slot <= self.latest_root_slot
+                    {
+                        if !first_ancestor_found {
+                            first_ancestor_found = true;
+                            first_ancestor_env = entry.program.get_environment();
+                            return true;
+                        }
+                        // Do not prune the entry if the runtime environment of the entry is
+                        // different than the entry that was previously found (stored in
+                        // first_ancestor_env). Different environment indicates that this entry
+                        // might belong to an older epoch that had a different environment (e.g.
+                        // different feature set). Once the root moves to the new/current epoch,
+                        // the entry will get pruned. But, until then the entry might still be
+                        // getting used by an older slot.
+                        if let Some(entry_env) = entry.program.get_environment()
+                            && let Some(env) = first_ancestor_env
+                            && !Arc::ptr_eq(entry_env, env)
+                        {
+                            return true;
+                        }
+                        self.stats.prunes_orphan.fetch_add(1, Ordering::Relaxed);
+                        false
+                    } else {
+                        self.stats.prunes_orphan.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                })
+                .filter(|entry| {
+                    // Remove outdated environment of previous feature set
+                    if let Some(upcoming_environments) = upcoming_environments.as_ref()
+                        && !Self::matches_environment(entry, upcoming_environments)
+                    {
+                        self.stats
+                            .prunes_environment
+                            .fetch_add(1, Ordering::Relaxed);
+                        return false;
+                    }
+                    true
+                })
+                .cloned()
+                .collect();
+            second_level.reverse();
         }
         self.remove_programs_with_no_entries();
         debug_assert!(self.latest_root_slot <= new_root_slot);
@@ -1049,94 +1034,91 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         let fork_graph = self.fork_graph.as_ref().unwrap().upgrade().unwrap();
         let locked_fork_graph = fork_graph.read().unwrap();
         let mut cooperative_loading_task = None;
-        match &self.index {
-            IndexImplementation::V1 {
-                entries,
-                loading_entries,
-            } => {
-                search_for.retain(|(key, match_criteria, _slot)| {
-                    if let Some(second_level) = entries.get(key) {
-                        let mut filter_by_deployment_slot = None;
-                        for entry in second_level.iter().rev() {
-                            if filter_by_deployment_slot
-                                .map(|slot| slot != entry.deployment_slot)
-                                .unwrap_or(false)
-                            {
+        let IndexImplementation::V1 {
+            entries,
+            loading_entries,
+        } = &self.index;
+        search_for.retain(|(key, match_criteria, _slot)| {
+            if let Some(second_level) = entries.get(key) {
+                let mut filter_by_deployment_slot = None;
+                for entry in second_level.iter().rev() {
+                    let deployment_slot = entry.deployment_slot;
+                    let required_deployment_slot =
+                        filter_by_deployment_slot.unwrap_or(deployment_slot);
+                    if required_deployment_slot != deployment_slot {
+                        continue;
+                    }
+                    let entry_in_same_branch = deployment_slot <= self.latest_root_slot
+                        || matches!(
+                            locked_fork_graph
+                                .relationship(deployment_slot, loaded_programs_for_tx_batch.slot),
+                            BlockRelation::Equal | BlockRelation::Ancestor
+                        );
+                    if entry_in_same_branch {
+                        let entry_is_of_age =
+                            loaded_programs_for_tx_batch.slot >= entry.effective_slot;
+                        let entry_to_return = if entry_is_of_age {
+                            if !Self::matches_environment(
+                                entry,
+                                program_runtime_environments_for_execution,
+                            ) {
+                                // We found an entry that would work, had its environment matched
+                                // the one we're planning to use for this slot.
+                                //
+                                // At this point we know that whatever the "current version" of
+                                // program is, it must have had a deployment slot equal to the
+                                // program we're looking at in this iteration. We just have to find
+                                // one with the correct environment and can skip entries for any
+                                // other deployment slot while searching further.
+                                filter_by_deployment_slot =
+                                    filter_by_deployment_slot.or(Some(deployment_slot));
                                 continue;
                             }
-                            if entry.deployment_slot <= self.latest_root_slot
-                                || matches!(
-                                    locked_fork_graph.relationship(
-                                        entry.deployment_slot,
-                                        loaded_programs_for_tx_batch.slot
-                                    ),
-                                    BlockRelation::Equal | BlockRelation::Ancestor
-                                )
-                            {
-                                let entry_to_return = if loaded_programs_for_tx_batch.slot
-                                    >= entry.effective_slot
-                                {
-                                    if !Self::matches_environment(
-                                        entry,
-                                        program_runtime_environments_for_execution,
-                                    ) {
-                                        filter_by_deployment_slot = filter_by_deployment_slot
-                                            .or(Some(entry.deployment_slot));
-                                        continue;
-                                    }
-                                    if !Self::matches_criteria(entry, match_criteria) {
-                                        break;
-                                    }
-                                    if let ProgramCacheEntryType::Unloaded(_environment) =
-                                        &entry.program
-                                    {
-                                        break;
-                                    }
-                                    entry.clone()
-                                } else if entry.is_implicit_delay_visibility_tombstone(
-                                    loaded_programs_for_tx_batch.slot,
-                                ) {
-                                    // Found a program entry on the current fork, but it's not effective
-                                    // yet. It indicates that the program has delayed visibility. Return
-                                    // the tombstone to reflect that.
-                                    Arc::new(ProgramCacheEntry::new_tombstone_with_usage_counter(
-                                        entry.deployment_slot,
-                                        entry.account_owner,
-                                        ProgramCacheEntryType::DelayVisibility,
-                                        entry.tx_usage_counter.clone(),
-                                    ))
-                                } else {
-                                    continue;
-                                };
-                                entry_to_return
-                                    .update_access_slot(loaded_programs_for_tx_batch.slot);
-                                if increment_usage_counter {
-                                    entry_to_return
-                                        .tx_usage_counter
-                                        .fetch_add(1, Ordering::Relaxed);
-                                }
-                                loaded_programs_for_tx_batch
-                                    .entries
-                                    .insert(*key, entry_to_return);
-                                return false;
+                            if !Self::matches_criteria(entry, match_criteria) {
+                                break;
                             }
+                            if let ProgramCacheEntryType::Unloaded(_environment) = &entry.program {
+                                break;
+                            }
+                            entry.clone()
+                        } else if entry.is_implicit_delay_visibility_tombstone(
+                            loaded_programs_for_tx_batch.slot,
+                        ) {
+                            // Found a program entry on the current fork, but it's not effective
+                            // yet. It indicates that the program has delayed visibility. Return
+                            // the tombstone to reflect that.
+                            Arc::new(ProgramCacheEntry::new_tombstone_with_usage_counter(
+                                deployment_slot,
+                                entry.account_owner,
+                                ProgramCacheEntryType::DelayVisibility,
+                                entry.tx_usage_counter.clone(),
+                            ))
+                        } else {
+                            continue;
+                        };
+                        entry_to_return.update_access_slot(loaded_programs_for_tx_batch.slot);
+                        if increment_usage_counter {
+                            entry_to_return
+                                .tx_usage_counter
+                                .fetch_add(1, Ordering::Relaxed);
                         }
+                        loaded_programs_for_tx_batch
+                            .entries
+                            .insert(*key, entry_to_return);
+                        return false;
                     }
-                    if cooperative_loading_task.is_none() {
-                        let mut loading_entries = loading_entries.lock().unwrap();
-                        let entry = loading_entries.entry(*key);
-                        if let Entry::Vacant(entry) = entry {
-                            entry.insert((
-                                loaded_programs_for_tx_batch.slot,
-                                thread::current().id(),
-                            ));
-                            cooperative_loading_task = Some(*key);
-                        }
-                    }
-                    true
-                });
+                }
             }
-        }
+            if cooperative_loading_task.is_none() {
+                let mut loading_entries = loading_entries.lock().unwrap();
+                let entry = loading_entries.entry(*key);
+                if let Entry::Vacant(entry) = entry {
+                    entry.insert((loaded_programs_for_tx_batch.slot, thread::current().id()));
+                    cooperative_loading_task = Some(*key);
+                }
+            }
+            true
+        });
         drop(locked_fork_graph);
         if count_hits_and_misses {
             self.stats
@@ -1159,38 +1141,35 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         last_modification_slot: Slot,
         loaded_program: Arc<ProgramCacheEntry>,
     ) -> bool {
-        match &mut self.index {
-            IndexImplementation::V1 {
-                loading_entries, ..
-            } => {
-                let loading_thread = loading_entries.get_mut().unwrap().remove(&key);
-                debug_assert_eq!(loading_thread, Some((current_slot, thread::current().id())));
-                // Check that it will be visible to our own fork once inserted
-                if loaded_program.deployment_slot > self.latest_root_slot
-                    && !matches!(
-                        self.fork_graph
-                            .as_ref()
-                            .unwrap()
-                            .upgrade()
-                            .unwrap()
-                            .read()
-                            .unwrap()
-                            .relationship(loaded_program.deployment_slot, current_slot),
-                        BlockRelation::Equal | BlockRelation::Ancestor
-                    )
-                {
-                    self.stats.lost_insertions.fetch_add(1, Ordering::Relaxed);
-                }
-                let was_occupied = self.assign_program(
-                    program_runtime_environments,
-                    key,
-                    last_modification_slot,
-                    loaded_program,
-                );
-                self.loading_task_waiter.notify();
-                was_occupied
-            }
+        let IndexImplementation::V1 {
+            loading_entries, ..
+        } = &mut self.index;
+        let loading_thread = loading_entries.get_mut().unwrap().remove(&key);
+        debug_assert_eq!(loading_thread, Some((current_slot, thread::current().id())));
+        // Check that it will be visible to our own fork once inserted
+        if loaded_program.deployment_slot > self.latest_root_slot
+            && !matches!(
+                self.fork_graph
+                    .as_ref()
+                    .unwrap()
+                    .upgrade()
+                    .unwrap()
+                    .read()
+                    .unwrap()
+                    .relationship(loaded_program.deployment_slot, current_slot),
+                BlockRelation::Equal | BlockRelation::Ancestor
+            )
+        {
+            self.stats.lost_insertions.fetch_add(1, Ordering::Relaxed);
         }
+        let was_occupied = self.assign_program(
+            program_runtime_environments,
+            key,
+            last_modification_slot,
+            loaded_program,
+        );
+        self.loading_task_waiter.notify();
+        was_occupied
     }
 
     pub fn merge(
@@ -1215,47 +1194,44 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         include_program_runtime_v1: bool,
         _include_program_runtime_v2: bool,
     ) -> Vec<(Pubkey, Slot, Arc<ProgramCacheEntry>)> {
-        match &self.index {
-            IndexImplementation::V1 { entries, .. } => entries
-                .iter()
-                .flat_map(|(id, second_level)| {
-                    second_level
-                        .iter()
-                        .filter_map(move |program| match program.program {
-                            ProgramCacheEntryType::Loaded(_) => {
-                                if include_program_runtime_v1 {
-                                    Some((*id, 0, program.clone()))
-                                } else {
-                                    None
-                                }
+        let IndexImplementation::V1 { entries, .. } = &self.index;
+        entries
+            .iter()
+            .flat_map(|(id, second_level)| {
+                second_level
+                    .iter()
+                    .filter_map(move |program| match program.program {
+                        ProgramCacheEntryType::Loaded(_) => {
+                            if include_program_runtime_v1 {
+                                Some((*id, 0, program.clone()))
+                            } else {
+                                None
                             }
-                            _ => None,
-                        })
-                })
-                .collect(),
-        }
+                        }
+                        _ => None,
+                    })
+            })
+            .collect()
     }
 
     /// Returns the list of all entries in the cache.
     pub fn get_flattened_entries_for_tests(&self) -> Vec<(Pubkey, Arc<ProgramCacheEntry>)> {
-        match &self.index {
-            IndexImplementation::V1 { entries, .. } => entries
-                .iter()
-                .flat_map(|(id, second_level)| {
-                    second_level.iter().map(|program| (*id, program.clone()))
-                })
-                .collect(),
-        }
+        let IndexImplementation::V1 { entries, .. } = &self.index;
+        entries
+            .iter()
+            .flat_map(|(id, second_level)| {
+                second_level.iter().map(|program| (*id, program.clone()))
+            })
+            .collect()
     }
 
     /// Returns the slot versions for the given program id.
     pub fn get_slot_versions_for_tests(&self, key: &Pubkey) -> &[Arc<ProgramCacheEntry>] {
-        match &self.index {
-            IndexImplementation::V1 { entries, .. } => entries
-                .get(key)
-                .map(|second_level| second_level.as_ref())
-                .unwrap_or(&[]),
-        }
+        let IndexImplementation::V1 { entries, .. } = &self.index;
+        entries
+            .get(key)
+            .map(|second_level| second_level.as_ref())
+            .unwrap_or(&[])
     }
 
     /// Unloads programs which were used infrequently
@@ -1315,12 +1291,9 @@ impl<FG: ForkGraph> ProgramCache<FG> {
 
     /// Removes all the entries at the given keys, if they exist
     pub fn remove_programs(&mut self, keys: impl Iterator<Item = Pubkey>) {
-        match &mut self.index {
-            IndexImplementation::V1 { entries, .. } => {
-                for k in keys {
-                    entries.remove(&k);
-                }
-            }
+        let IndexImplementation::V1 { entries, .. } = &mut self.index;
+        for k in keys {
+            entries.remove(&k);
         }
     }
 
@@ -1332,44 +1305,38 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         _last_modification_slot: Slot,
         remove_entry: &Arc<ProgramCacheEntry>,
     ) {
-        match &mut self.index {
-            IndexImplementation::V1 { entries, .. } => {
-                let second_level = entries.get_mut(&id).expect("Cache lookup failed");
-                let candidate = second_level
-                    .iter_mut()
-                    .find(|entry| entry == &remove_entry)
-                    .expect("Program entry not found");
+        let IndexImplementation::V1 { entries, .. } = &mut self.index;
+        let second_level = entries.get_mut(&id).expect("Cache lookup failed");
+        let candidate = second_level
+            .iter_mut()
+            .find(|entry| entry == &remove_entry)
+            .expect("Program entry not found");
 
-                // Certain entry types cannot be unloaded, such as tombstones, or already unloaded entries.
-                // For such entries, `to_unloaded()` will return None.
-                // These entry types do not occupy much memory.
-                if let Some(unloaded) = candidate.to_unloaded() {
-                    if candidate.tx_usage_counter.load(Ordering::Relaxed) == 1 {
-                        self.stats.one_hit_wonders.fetch_add(1, Ordering::Relaxed);
-                    }
-                    self.stats
-                        .evictions
-                        .entry(id)
-                        .and_modify(|c| *c = c.saturating_add(1))
-                        .or_insert(1);
-                    *candidate = Arc::new(unloaded);
-                }
+        // Certain entry types cannot be unloaded, such as tombstones, or already unloaded entries.
+        // For such entries, `to_unloaded()` will return None.
+        // These entry types do not occupy much memory.
+        if let Some(unloaded) = candidate.to_unloaded() {
+            if candidate.tx_usage_counter.load(Ordering::Relaxed) == 1 {
+                self.stats.one_hit_wonders.fetch_add(1, Ordering::Relaxed);
             }
+            self.stats
+                .evictions
+                .entry(id)
+                .and_modify(|c| *c = c.saturating_add(1))
+                .or_insert(1);
+            *candidate = Arc::new(unloaded);
         }
     }
 
     fn remove_programs_with_no_entries(&mut self) {
-        match &mut self.index {
-            IndexImplementation::V1 { entries, .. } => {
-                let num_programs_before_removal = entries.len();
-                entries.retain(|_key, second_level| !second_level.is_empty());
-                if entries.len() < num_programs_before_removal {
-                    self.stats.empty_entries.fetch_add(
-                        num_programs_before_removal.saturating_sub(entries.len()) as u64,
-                        Ordering::Relaxed,
-                    );
-                }
-            }
+        let IndexImplementation::V1 { entries, .. } = &mut self.index;
+        let num_programs_before_removal = entries.len();
+        entries.retain(|_key, second_level| !second_level.is_empty());
+        if entries.len() < num_programs_before_removal {
+            self.stats.empty_entries.fetch_add(
+                num_programs_before_removal.saturating_sub(entries.len()) as u64,
+                Ordering::Relaxed,
+            );
         }
     }
 }
