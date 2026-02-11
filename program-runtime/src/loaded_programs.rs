@@ -280,6 +280,7 @@ impl ProgramCacheStats {
              Prunes-Orphan: {prunes_orphan}, Prunes-Environment: {prunes_environment}, Empty: \
              {empty_entries}, Water-Level: {water_level}"
         );
+
         if log_enabled!(log::Level::Trace) && !self.evictions.is_empty() {
             let mut evictions = self.evictions.iter().collect::<Vec<_>>();
             evictions.sort_by_key(|e| e.1);
@@ -343,7 +344,6 @@ impl ProgramCacheEntry {
         elf_bytes: &[u8],
         account_size: usize,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
-        compile: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_internal(
             loader_key,
@@ -355,7 +355,6 @@ impl ProgramCacheEntry {
             #[cfg(feature = "metrics")]
             metrics,
             false, /* reloading */
-            compile,
         )
     }
 
@@ -375,7 +374,6 @@ impl ProgramCacheEntry {
         elf_bytes: &[u8],
         account_size: usize,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
-        compile: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Self::new_internal(
             loader_key,
@@ -387,7 +385,6 @@ impl ProgramCacheEntry {
             #[cfg(feature = "metrics")]
             metrics,
             true, /* reloading */
-            compile,
         )
     }
 
@@ -400,7 +397,6 @@ impl ProgramCacheEntry {
         account_size: usize,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
         reloading: bool,
-        compile: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let stats = ProgramStatistics::default();
         #[cfg(feature = "metrics")]
@@ -421,19 +417,6 @@ impl ProgramCacheEntry {
             #[cfg(feature = "metrics")]
             {
                 metrics.verify_code_us = verify_code_time.end_as_us();
-            }
-        }
-
-        #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
-        if compile {
-            let jit_compile_time = Measure::start("jit_compile_time");
-            executable.jit_compile()?;
-            let compile_time = jit_compile_time.end_as_us();
-            stats.compilations.fetch_add(1, Ordering::Relaxed);
-            stats.total_compilation_time_us.fetch_add(compile_time, Ordering::Relaxed);
-            #[cfg(feature = "metrics")]
-            {
-                metrics.jit_compile_us = compile_time;
             }
         }
 
@@ -757,6 +740,67 @@ impl ProgramCacheForTxBatch {
         }
     }
 
+    #[cfg(not(all(not(target_os = "windows"), target_arch = "x86_64")))]
+    pub fn evaluate_compilations(
+        &self,
+        #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+    }
+
+    #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
+    pub fn evaluate_compilations(
+        &self,
+        #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO: add some decay
+        for (_, entry) in &self.entries {
+            let exec = if let ProgramCacheEntryType::Loaded(exec) = &entry.program {
+                // Only need to look at programs that haven't been compiled yet.
+                if exec.get_compiled_program().is_some() {
+                    continue;
+                }
+                exec
+            } else {
+                continue;
+            };
+            let stats = &entry.stats;
+            let interps = stats.interpreted_invocations.load(Ordering::Relaxed);
+            let interp_mean = if interps == 0 {
+                0
+            } else {
+                stats.total_interpretation_time_us.load(Ordering::Relaxed) / interps
+            };
+            let compiles = stats.compilations.load(Ordering::Relaxed);
+            let compile_mean = if compiles == 0 {
+                // don't even bother compiling programs that take <50µs to interpret.
+                50
+            } else {
+                let execs = stats.jit_invocations.load(Ordering::Relaxed);
+                if execs == 0 {
+                    50
+                } else {
+                    let comptime = stats.total_compilation_time_us.load(Ordering::Relaxed);
+                    let exectime = stats.total_execution_time_us.load(Ordering::Relaxed);
+                    comptime / compiles + exectime / execs
+                }
+            };
+            if interp_mean > compile_mean {
+                let jit_compile_time = Measure::start("jit_compile_time");
+                exec.jit_compile()?;
+                let compile_time = jit_compile_time.end_as_us();
+                stats.compilations.fetch_add(1, Ordering::Relaxed);
+                stats
+                    .total_compilation_time_us
+                    .fetch_add(compile_time, Ordering::Relaxed);
+                #[cfg(feature = "metrics")]
+                {
+                    metrics.jit_compile_us = compile_time;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Refill the cache with a single entry. It's typically called during transaction loading, and
     /// transaction processing (for program management instructions).
     /// It replaces the existing entry (if any) with the provided entry. The return value contains
@@ -844,6 +888,31 @@ impl<FG: ForkGraph> ProgramCache<FG> {
             fork_graph: None,
             loading_task_waiter: Arc::new(LoadingTaskWaiter::default()),
         }
+    }
+
+    pub fn log_entries(&self) {
+        use std::fmt::Write;
+        let IndexImplementation::V1 { entries, .. } = &self.index;
+        let mut output = String::new();
+        output.push_str("[");
+        for (addr, entries) in entries {
+            for (idx, entry) in entries.iter().enumerate() {
+                let stats = &entry.stats;
+                let compiles = stats.compilations.load(Ordering::Relaxed);
+                let comptime = stats.total_compilation_time_us.load(Ordering::Relaxed);
+                let invokes = stats.jit_invocations.load(Ordering::Relaxed);
+                let exectime = stats.total_execution_time_us.load(Ordering::Relaxed);
+                let interprets = stats.interpreted_invocations.load(Ordering::Relaxed);
+                let interptime = stats.total_interpretation_time_us.load(Ordering::Relaxed);
+                let uses = stats.uses.load(Ordering::Relaxed);
+                let _ = write!(
+                    &mut output,
+                    "({addr},{idx},{compiles}, {comptime}, {invokes}, {exectime}, {interprets}, {interptime}, {uses}), "
+                );
+            }
+        }
+        output.push_str("]");
+        log::warn!("PC_LOG: {output}");
     }
 
     pub fn set_fork_graph(&mut self, fork_graph: Weak<RwLock<FG>>) {
@@ -1056,18 +1125,16 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         program_runtime_environments_for_execution: &ProgramRuntimeEnvironments,
         increment_usage_counter: bool,
         count_hits_and_misses: bool,
-    ) -> Option<(Pubkey, Option<Arc<ProgramStatistics>>)> {
+    ) -> Option<Pubkey> {
         debug_assert!(self.fork_graph.is_some());
         let fork_graph = self.fork_graph.as_ref().unwrap().upgrade().unwrap();
         let locked_fork_graph = fork_graph.read().unwrap();
         let mut cooperative_loading_task = None;
-        let mut entry_stats = None;
         let IndexImplementation::V1 {
             entries,
             loading_entries,
         } = &self.index;
         search_for.retain(|(key, match_criteria, _slot)| {
-            let mut this_key_stats = None;
             if let Some(second_level) = entries.get(key) {
                 let mut filter_by_deployment_slot = None;
                 for entry in second_level.iter().rev() {
@@ -1107,7 +1174,6 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                                 break;
                             }
                             if let ProgramCacheEntryType::Unloaded(_environment) = &entry.program {
-                                this_key_stats = Some(Arc::clone(&entry.stats));
                                 break;
                             }
                             entry.clone()
@@ -1143,7 +1209,6 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                 if let Entry::Vacant(entry) = entry {
                     entry.insert((loaded_programs_for_tx_batch.slot, thread::current().id()));
                     cooperative_loading_task = Some(*key);
-                    entry_stats = this_key_stats;
                 }
             }
             true
@@ -1158,7 +1223,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                 Ordering::Relaxed,
             );
         }
-        cooperative_loading_task.map(|a| (a, entry_stats))
+        cooperative_loading_task
     }
 
     /// Called by Bank::replenish_program_cache() for each program that is done loading.

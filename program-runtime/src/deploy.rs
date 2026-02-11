@@ -111,7 +111,6 @@ pub fn deploy_program(
             account_size,
             #[cfg(feature = "metrics")]
             load_program_metrics,
-            false, /* compile */
         )
     }
     .map_err(|err| {

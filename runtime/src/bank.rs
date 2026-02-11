@@ -1485,8 +1485,7 @@ impl Bank {
                 .transaction_processor
                 .global_program_cache
                 .read()
-                .unwrap()
-                .stats,
+                .unwrap(),
             parent.slot(),
         );
 

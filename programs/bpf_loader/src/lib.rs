@@ -1236,7 +1236,6 @@ mod test_utils {
                     account.data().len(),
                     #[cfg(feature = "metrics")]
                     &mut LoadProgramMetrics::default(),
-                    true, /* compile */
                 )
                 .map_err(|_| InstructionError::InvalidAccountData);
                 if let Ok(loaded_program) = loaded_program {

@@ -38,8 +38,7 @@ use {
         },
         invoke_context::{EnvironmentConfig, InvokeContext},
         loaded_programs::{
-            EpochBoundaryPreparation, ForkGraph, ProgramCache, ProgramCacheEntry,
-            ProgramCacheForTxBatch, ProgramCacheMatchCriteria, ProgramRuntimeEnvironments,
+            EpochBoundaryPreparation, ForkGraph, LoadProgramMetrics, ProgramCache, ProgramCacheEntry, ProgramCacheForTxBatch, ProgramCacheMatchCriteria, ProgramRuntimeEnvironments
         },
         sysvar_cache::SysvarCache,
     },
@@ -869,33 +868,15 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             // Unlock the global cache again.
             drop(global_program_cache);
 
-            let program_to_store = program_to_load.map(|(key, program_stats)| {
-                let should_compile = program_stats
-                    .map(|s| {
-                        let compiles = s.compilations.load(Ordering::Relaxed);
-                        let mean_compile_time = if compiles == 0 {
-                            500
-                        } else {
-                            s.total_compilation_time_us.load(Ordering::Relaxed) / compiles
-                        };
-                        let interprets = s.interpreted_invocations.load(Ordering::Relaxed);
-                        let mean_interp_time = if interprets == 0 {
-                            0
-                        } else {
-                            s.total_interpretation_time_us.load(Ordering::Relaxed) / interprets
-                        };
-                        mean_interp_time < mean_compile_time
-                    })
-                    .unwrap_or(false);
+            let program_to_store = program_to_load.map(|key| {
                 // Load, verify and compile one program.
                 let (program, last_modification_slot) =
-                    crate::program_loader::load_maybe_compile_program_with_pubkey(
+                    crate::program_loader::load_program_with_pubkey(
                         account_loader,
                         program_runtime_environments_for_execution,
                         &key,
                         self.slot,
                         execute_timings,
-                        should_compile,
                     )
                     .expect("called load_program_with_pubkey() with nonexistent account");
                 (key, program, last_modification_slot)
@@ -932,6 +913,12 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 let _new_cookie = task_waiter.wait(task_cookie);
             }
         }
+        let mut load_metrics = LoadProgramMetrics::default();
+        let result = program_cache_for_tx_batch.evaluate_compilations(&mut load_metrics);
+        if result.is_err() {
+            log::warn!("PC_LOG: compilation failed: {:?}", result);
+        }
+        load_metrics.submit_datapoint(&mut execute_timings.details);
     }
 
     /// Execute a transaction using the provided loaded accounts and update

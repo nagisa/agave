@@ -91,29 +91,6 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
     current_slot: Slot,
     execute_timings: &mut ExecuteTimings,
 ) -> Option<(Arc<ProgramCacheEntry>, Slot)> {
-    load_maybe_compile_program_with_pubkey(
-        callbacks,
-        environments,
-        pubkey,
-        current_slot,
-        execute_timings,
-        true,
-    )
-}
-
-/// Loads the program with the given pubkey.
-///
-/// If the account doesn't exist it returns `None`. If the account does exist, it must be a program
-/// account (belong to one of the program loaders). Returns `Some(InvalidAccountData)` if the program
-/// account is `Closed`, contains invalid data or any of the programdata accounts are invalid.
-pub fn load_maybe_compile_program_with_pubkey<CB: TransactionProcessingCallback>(
-    callbacks: &CB,
-    environments: &ProgramRuntimeEnvironments,
-    pubkey: &Pubkey,
-    current_slot: Slot,
-    execute_timings: &mut ExecuteTimings,
-    compile: bool,
-) -> Option<(Arc<ProgramCacheEntry>, Slot)> {
     let mut load_program_metrics = LoadProgramMetrics {
         program_id: pubkey.to_string(),
         ..LoadProgramMetrics::default()
@@ -133,7 +110,6 @@ pub fn load_maybe_compile_program_with_pubkey<CB: TransactionProcessingCallback>
             program_account.data(),
             program_account.data().len(),
             &mut load_program_metrics,
-            compile,
         )
         .map_err(|_| (0, ProgramCacheEntryOwner::LoaderV1)),
 
@@ -145,7 +121,6 @@ pub fn load_maybe_compile_program_with_pubkey<CB: TransactionProcessingCallback>
             program_account.data(),
             program_account.data().len(),
             &mut load_program_metrics,
-            compile,
         )
         .map_err(|_| (0, ProgramCacheEntryOwner::LoaderV2)),
 
@@ -169,7 +144,6 @@ pub fn load_maybe_compile_program_with_pubkey<CB: TransactionProcessingCallback>
                         .len()
                         .saturating_add(programdata_account.data().len()),
                     &mut load_program_metrics,
-                    compile,
                 )
             })
             .map_err(|_| (deployment_slot, ProgramCacheEntryOwner::LoaderV3)),
@@ -188,7 +162,6 @@ pub fn load_maybe_compile_program_with_pubkey<CB: TransactionProcessingCallback>
                         elf_bytes,
                         program_account.data().len(),
                         &mut load_program_metrics,
-                        compile,
                     )
                 })
                 .map_err(|_| (deployment_slot, ProgramCacheEntryOwner::LoaderV4))
@@ -487,7 +460,6 @@ mod tests {
             &buffer,
             size,
             &mut metrics,
-            true,
         );
 
         assert!(result.is_ok());
@@ -597,7 +569,6 @@ mod tests {
             account_data.data(),
             account_data.data().len(),
             &mut LoadProgramMetrics::default(),
-            true
         );
 
         assert_eq!(result.unwrap(), (Arc::new(expected.unwrap()), 0));
@@ -691,7 +662,6 @@ mod tests {
             account_data.data(),
             account_data.data().len(),
             &mut LoadProgramMetrics::default(),
-            true
         );
         assert_eq!(result.unwrap(), (Arc::new(expected.unwrap()), 0));
     }
@@ -776,7 +746,6 @@ mod tests {
             account_data.data(),
             account_data.data().len(),
             &mut LoadProgramMetrics::default(),
-            true,
         );
         assert_eq!(result.unwrap(), (Arc::new(expected.unwrap()), 0));
     }

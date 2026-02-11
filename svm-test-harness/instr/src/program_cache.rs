@@ -60,7 +60,6 @@ pub fn add_program(
         elf,
         elf.len(),
         &mut LoadProgramMetrics::default(),
-        true,
     )
     .unwrap();
 
