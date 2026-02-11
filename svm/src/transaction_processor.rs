@@ -8,7 +8,7 @@ use {
         account_overrides::AccountOverrides,
         message_processor::process_message,
         nonce_info::NonceInfo,
-        program_loader::{get_program_deployment_slot, load_program_with_pubkey},
+        program_loader::get_program_deployment_slot,
         rollback_accounts::RollbackAccounts,
         transaction_account_state_info::TransactionAccountStateInfo,
         transaction_balances::{BalanceCollectionRoutines, BalanceCollector},
@@ -812,7 +812,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         let mut program_accounts_set = HashMap::default();
         for account_key in tx.account_keys().iter() {
             if let Some(cache_entry) = program_cache_for_tx_batch.find(account_key) {
-                cache_entry.tx_usage_counter.fetch_add(1, Ordering::Relaxed);
+                cache_entry.stats.uses.fetch_add(1, Ordering::Relaxed);
             } else if let Some((account, last_modification_slot)) =
                 account_loader.get_account_shared_data(account_key)
                 && PROGRAM_OWNERS.contains(account.owner())
@@ -869,16 +869,35 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             // Unlock the global cache again.
             drop(global_program_cache);
 
-            let program_to_store = program_to_load.map(|key| {
+            let program_to_store = program_to_load.map(|(key, program_stats)| {
+                let should_compile = program_stats
+                    .map(|s| {
+                        let compiles = s.compilations.load(Ordering::Relaxed);
+                        let mean_compile_time = if compiles == 0 {
+                            500
+                        } else {
+                            s.total_compilation_time_us.load(Ordering::Relaxed) / compiles
+                        };
+                        let interprets = s.interpreted_invocations.load(Ordering::Relaxed);
+                        let mean_interp_time = if interprets == 0 {
+                            0
+                        } else {
+                            s.total_interpretation_time_us.load(Ordering::Relaxed) / interprets
+                        };
+                        mean_interp_time < mean_compile_time
+                    })
+                    .unwrap_or(false);
                 // Load, verify and compile one program.
-                let (program, last_modification_slot) = load_program_with_pubkey(
-                    account_loader,
-                    program_runtime_environments_for_execution,
-                    &key,
-                    self.slot,
-                    execute_timings,
-                )
-                .expect("called load_program_with_pubkey() with nonexistent account");
+                let (program, last_modification_slot) =
+                    crate::program_loader::load_maybe_compile_program_with_pubkey(
+                        account_loader,
+                        program_runtime_environments_for_execution,
+                        &key,
+                        self.slot,
+                        execute_timings,
+                        should_compile,
+                    )
+                    .expect("called load_program_with_pubkey() with nonexistent account");
                 (key, program, last_modification_slot)
             });
 
