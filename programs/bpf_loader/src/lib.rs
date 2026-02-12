@@ -146,8 +146,8 @@ pub(crate) fn process_instruction_inner<'a>(
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 executor
                     .stats
-                    .total_execution_time_us
-                    .fetch_add(timer.as_us(), std::sync::atomic::Ordering::Relaxed);
+                    .total_execution_time_ns
+                    .fetch_add(timer.as_ns(), std::sync::atomic::Ordering::Relaxed);
             } else {
                 executor
                     .stats
@@ -155,8 +155,8 @@ pub(crate) fn process_instruction_inner<'a>(
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 executor
                     .stats
-                    .total_interpretation_time_us
-                    .fetch_add(timer.as_us(), std::sync::atomic::Ordering::Relaxed);
+                    .total_interpretation_time_ns
+                    .fetch_add(timer.as_ns(), std::sync::atomic::Ordering::Relaxed);
             }
             result
         }

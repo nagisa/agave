@@ -182,11 +182,11 @@ impl ProgramCacheEntryType {
 pub struct ProgramStatistics {
     pub uses: AtomicU64,
     pub compilations: AtomicU64,
-    pub total_compilation_time_us: AtomicU64,
-    pub total_execution_time_us: AtomicU64,
+    pub total_compilation_time_ns: AtomicU64,
+    pub total_execution_time_ns: AtomicU64,
     pub jit_invocations: AtomicU64,
     pub interpreted_invocations: AtomicU64,
-    pub total_interpretation_time_us: AtomicU64,
+    pub total_interpretation_time_ns: AtomicU64,
 }
 
 impl ProgramStatistics {
@@ -195,14 +195,16 @@ impl ProgramStatistics {
         self.uses.fetch_add(other.uses.load(ord), ord);
         self.compilations
             .fetch_add(other.compilations.load(ord), ord);
-        self.total_compilation_time_us
-            .fetch_add(other.total_compilation_time_us.load(ord), ord);
+        self.total_compilation_time_ns
+            .fetch_add(other.total_compilation_time_ns.load(ord), ord);
         self.jit_invocations
             .fetch_add(other.jit_invocations.load(ord), ord);
+        self.total_execution_time_ns
+            .fetch_add(other.total_execution_time_ns.load(ord), ord);
         self.interpreted_invocations
             .fetch_add(other.interpreted_invocations.load(ord), ord);
-        self.total_interpretation_time_us
-            .fetch_add(other.total_interpretation_time_us.load(ord), ord);
+        self.total_interpretation_time_ns
+            .fetch_add(other.total_interpretation_time_ns.load(ord), ord);
     }
 }
 
@@ -752,7 +754,7 @@ impl ProgramCacheForTxBatch {
         &self,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // TODO: add some decay
+        const ALWAYS_INTERPRET_IF_FASTER_THAN_NS: u64 = 10_000;
         for (_, entry) in &self.entries {
             let exec = if let ProgramCacheEntryType::Loaded(exec) = &entry.program {
                 // Only need to look at programs that haven't been compiled yet.
@@ -768,33 +770,33 @@ impl ProgramCacheForTxBatch {
             let interp_mean = if interps == 0 {
                 0
             } else {
-                stats.total_interpretation_time_us.load(Ordering::Relaxed) / interps
+                stats.total_interpretation_time_ns.load(Ordering::Relaxed) / interps
             };
             let compiles = stats.compilations.load(Ordering::Relaxed);
             let compile_mean = if compiles == 0 {
-                // don't even bother compiling programs that take <50µs to interpret.
-                50
+                // don't even bother compiling programs that take <10µs to interpret.
+                ALWAYS_INTERPRET_IF_FASTER_THAN_NS
             } else {
                 let execs = stats.jit_invocations.load(Ordering::Relaxed);
                 if execs == 0 {
-                    50
+                    ALWAYS_INTERPRET_IF_FASTER_THAN_NS
                 } else {
-                    let comptime = stats.total_compilation_time_us.load(Ordering::Relaxed);
-                    let exectime = stats.total_execution_time_us.load(Ordering::Relaxed);
+                    let comptime = stats.total_compilation_time_ns.load(Ordering::Relaxed);
+                    let exectime = stats.total_execution_time_ns.load(Ordering::Relaxed);
                     comptime / compiles + exectime / execs
                 }
             };
             if interp_mean > compile_mean {
                 let jit_compile_time = Measure::start("jit_compile_time");
                 exec.jit_compile()?;
-                let compile_time = jit_compile_time.end_as_us();
+                let compile_time = jit_compile_time.end_as_ns();
                 stats.compilations.fetch_add(1, Ordering::Relaxed);
                 stats
-                    .total_compilation_time_us
+                    .total_compilation_time_ns
                     .fetch_add(compile_time, Ordering::Relaxed);
                 #[cfg(feature = "metrics")]
                 {
-                    metrics.jit_compile_us = compile_time;
+                    metrics.jit_compile_us = compile_time / 1000;
                 }
             }
         }
@@ -899,15 +901,15 @@ impl<FG: ForkGraph> ProgramCache<FG> {
             for (idx, entry) in entries.iter().enumerate() {
                 let stats = &entry.stats;
                 let compiles = stats.compilations.load(Ordering::Relaxed);
-                let comptime = stats.total_compilation_time_us.load(Ordering::Relaxed);
+                let comptime = stats.total_compilation_time_ns.load(Ordering::Relaxed);
                 let invokes = stats.jit_invocations.load(Ordering::Relaxed);
-                let exectime = stats.total_execution_time_us.load(Ordering::Relaxed);
+                let exectime = stats.total_execution_time_ns.load(Ordering::Relaxed);
                 let interprets = stats.interpreted_invocations.load(Ordering::Relaxed);
-                let interptime = stats.total_interpretation_time_us.load(Ordering::Relaxed);
+                let interptime = stats.total_interpretation_time_ns.load(Ordering::Relaxed);
                 let uses = stats.uses.load(Ordering::Relaxed);
                 let _ = write!(
                     &mut output,
-                    "({addr},{idx},{compiles}, {comptime}, {invokes}, {exectime}, {interprets}, {interptime}, {uses}), "
+                    "({addr}, {idx}, {compiles}, {comptime}, {invokes}, {exectime}, {interprets}, {interptime}, {uses}), "
                 );
             }
         }
