@@ -914,10 +914,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             }
         }
         let mut load_metrics = LoadProgramMetrics::default();
-        let result = program_cache_for_tx_batch.evaluate_compilations(&mut load_metrics);
-        if result.is_err() {
-            log::warn!("PC_LOG: compilation failed: {:?}", result);
-        }
+        program_cache_for_tx_batch.evaluate_compilations(&mut load_metrics);
         load_metrics.submit_datapoint(&mut execute_timings.details);
     }
 

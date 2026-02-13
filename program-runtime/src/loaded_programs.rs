@@ -746,14 +746,14 @@ impl ProgramCacheForTxBatch {
     pub fn evaluate_compilations(
         &self,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) {
     }
 
     #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
     pub fn evaluate_compilations(
         &self,
         #[cfg(feature = "metrics")] metrics: &mut LoadProgramMetrics,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) {
         const ALWAYS_INTERPRET_IF_FASTER_THAN_NS: u64 = 10_000;
         for (_, entry) in &self.entries {
             let exec = if let ProgramCacheEntryType::Loaded(exec) = &entry.program {
@@ -788,7 +788,7 @@ impl ProgramCacheForTxBatch {
             };
             if interp_mean > compile_mean {
                 let jit_compile_time = Measure::start("jit_compile_time");
-                exec.jit_compile()?;
+                let compile_result = exec.jit_compile();
                 let compile_time = jit_compile_time.end_as_ns();
                 stats.compilations.fetch_add(1, Ordering::Relaxed);
                 stats
@@ -798,9 +798,11 @@ impl ProgramCacheForTxBatch {
                 {
                     metrics.jit_compile_us = compile_time / 1000;
                 }
+                if let Err(e) = compile_result {
+                    log::warn!("PC_LOG: compilation failed {e:?}");
+                }
             }
         }
-        Ok(())
     }
 
     /// Refill the cache with a single entry. It's typically called during transaction loading, and
