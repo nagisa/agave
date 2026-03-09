@@ -2090,14 +2090,15 @@ mod tests {
 
         let key = Pubkey::new_unique();
         let name = "a_builtin_name";
-        let program = ProgramCacheEntry::new_builtin(
-            0,
-            name.len(),
-            (
-                |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
-                |_| {},
-            ),
-        );
+        let program = ProgramCacheEntry::new_builtin(0, name.len(), |p, n| {
+            p.register_function(
+                n,
+                (
+                    |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
+                    |_| {},
+                ),
+            )
+        });
 
         batch_processor.add_builtin(key, program);
 
@@ -2118,14 +2119,15 @@ mod tests {
         let entry = loaded_programs_for_tx_batch.find(&key).unwrap();
 
         // Repeating code because ProgramCacheEntry does not implement clone.
-        let program = ProgramCacheEntry::new_builtin(
-            0,
-            name.len(),
-            (
-                |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
-                |_| {},
-            ),
-        );
+        let program = ProgramCacheEntry::new_builtin(0, name.len(), |p, n| {
+            p.register_function(
+                n,
+                (
+                    |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
+                    |_| {},
+                ),
+            )
+        });
         assert_eq!(entry, Arc::new(program));
     }
 

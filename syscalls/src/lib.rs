@@ -31,7 +31,7 @@ use {
     solana_sbpf::{
         declare_builtin_function,
         memory_region::{AccessType, MemoryMapping},
-        program::{BuiltinProgram, SBPFVersion},
+        program::{BuiltinFunctionDefinition, BuiltinProgram, SBPFVersion},
         vm::Config,
     },
     solana_secp256k1_recover::{
@@ -279,9 +279,9 @@ fn consume_compute_meter(invoke_context: &InvokeContext, amount: u64) -> Result<
 // syscalls. If this macro name is changed, or if a new one is added, then
 // gen-syscall-list/build.rs must also be updated.
 macro_rules! register_feature_gated_function {
-    ($result:expr, $is_feature_active:expr, $name:expr, $call:expr $(,)?) => {
+    ($result:expr, $is_feature_active:expr, $name:expr, $call:ty $(,)?) => {
         if $is_feature_active {
-            $result.register_function($name, $call)
+            <$call>::register(&mut $result, $name)
         } else {
             Ok(())
         }
@@ -345,84 +345,42 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         // Warning, do not use `Config::default()` so that configuration here is explicit.
     };
 
-    // NOTE: `register_function` calls are checked by gen-syscall-list to create
+    // NOTE: `register_to` calls are checked by gen-syscall-list to create
     // the list of syscalls. If this function name is changed, or if a new one
     // is added, then gen-syscall-list/build.rs must also be updated.
     let mut result = BuiltinProgram::new_loader(config);
 
     // Abort
-    result.register_function("abort", (SyscallAbort::vm, SyscallAbort::codegen))?;
+    SyscallAbort::register(&mut result, "abort")?;
 
     // Panic
-    result.register_function("sol_panic_", (SyscallPanic::vm, SyscallPanic::codegen))?;
+    SyscallPanic::register(&mut result, "sol_panic_")?;
 
     // Logging
-    result.register_function("sol_log_", (SyscallLog::vm, SyscallLog::codegen))?;
-    result.register_function("sol_log_64_", (SyscallLogU64::vm, SyscallLogU64::codegen))?;
-    result.register_function(
-        "sol_log_pubkey",
-        (SyscallLogPubkey::vm, SyscallLogPubkey::codegen),
-    )?;
-    result.register_function(
-        "sol_log_compute_units_",
-        (
-            SyscallLogBpfComputeUnits::vm,
-            SyscallLogBpfComputeUnits::codegen,
-        ),
-    )?;
+    SyscallLog::register(&mut result, "sol_log_")?;
+    SyscallLogU64::register(&mut result, "sol_log_64_")?;
+    SyscallLogPubkey::register(&mut result, "sol_log_pubkey")?;
+    SyscallLogBpfComputeUnits::register(&mut result, "sol_log_compute_units_")?;
 
     // Program defined addresses (PDA)
-    result.register_function(
-        "sol_create_program_address",
-        (
-            SyscallCreateProgramAddress::vm,
-            SyscallCreateProgramAddress::codegen,
-        ),
-    )?;
-    result.register_function(
-        "sol_try_find_program_address",
-        (
-            SyscallTryFindProgramAddress::vm,
-            SyscallTryFindProgramAddress::codegen,
-        ),
-    )?;
+    SyscallCreateProgramAddress::register(&mut result, "sol_create_program_address")?;
+    SyscallTryFindProgramAddress::register(&mut result, "sol_try_find_program_address")?;
 
     // Sha256
-    result.register_function(
-        "sol_sha256",
-        (
-            SyscallHash::<Sha256Hasher>::vm,
-            SyscallHash::<Sha256Hasher>::codegen,
-        ),
-    )?;
+    SyscallHash::<Sha256Hasher>::register(&mut result, "sol_sha256")?;
 
     // Keccak256
-    result.register_function(
-        "sol_keccak256",
-        (
-            SyscallHash::<Keccak256Hasher>::vm,
-            SyscallHash::<Keccak256Hasher>::codegen,
-        ),
-    )?;
+    SyscallHash::<Keccak256Hasher>::register(&mut result, "sol_keccak256")?;
 
     // Secp256k1 Recover
-    result.register_function(
-        "sol_secp256k1_recover",
-        (
-            SyscallSecp256k1Recover::vm,
-            SyscallSecp256k1Recover::codegen,
-        ),
-    )?;
+    SyscallSecp256k1Recover::register(&mut result, "sol_secp256k1_recover")?;
 
     // Blake3
     register_feature_gated_function!(
         result,
         blake3_syscall_enabled,
         "sol_blake3",
-        (
-            SyscallHash::<Blake3Hasher>::vm,
-            SyscallHash::<Blake3Hasher>::codegen
-        ),
+        SyscallHash::<Blake3Hasher>
     )?;
 
     // Elliptic Curve Operations
@@ -430,133 +388,82 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         curve25519_syscall_enabled,
         "sol_curve_validate_point",
-        (
-            SyscallCurvePointValidation::vm,
-            SyscallCurvePointValidation::codegen
-        ),
+        SyscallCurvePointValidation
     )?;
     register_feature_gated_function!(
         result,
         curve25519_syscall_enabled,
         "sol_curve_group_op",
-        (SyscallCurveGroupOps::vm, SyscallCurveGroupOps::codegen),
+        SyscallCurveGroupOps
     )?;
     register_feature_gated_function!(
         result,
         curve25519_syscall_enabled,
         "sol_curve_multiscalar_mul",
-        (
-            SyscallCurveMultiscalarMultiplication::vm,
-            SyscallCurveMultiscalarMultiplication::codegen
-        ),
+        SyscallCurveMultiscalarMultiplication
     )?;
     register_feature_gated_function!(
         result,
         enable_bls12_381_syscall,
         "sol_curve_decompress",
-        (SyscallCurveDecompress::vm, SyscallCurveDecompress::codegen),
+        SyscallCurveDecompress
     )?;
     register_feature_gated_function!(
         result,
         enable_bls12_381_syscall,
         "sol_curve_pairing_map",
-        (SyscallCurvePairingMap::vm, SyscallCurvePairingMap::codegen),
+        SyscallCurvePairingMap
     )?;
 
     // Sysvars
-    result.register_function(
-        "sol_get_clock_sysvar",
-        (SyscallGetClockSysvar::vm, SyscallGetClockSysvar::codegen),
-    )?;
-    result.register_function(
-        "sol_get_epoch_schedule_sysvar",
-        (
-            SyscallGetEpochScheduleSysvar::vm,
-            SyscallGetEpochScheduleSysvar::codegen,
-        ),
-    )?;
+    SyscallGetClockSysvar::register(&mut result, "sol_get_clock_sysvar")?;
+    SyscallGetEpochScheduleSysvar::register(&mut result, "sol_get_epoch_schedule_sysvar")?;
     register_feature_gated_function!(
         result,
         !disable_fees_sysvar,
         "sol_get_fees_sysvar",
-        (SyscallGetFeesSysvar::vm, SyscallGetFeesSysvar::codegen),
+        SyscallGetFeesSysvar
     )?;
-    result.register_function(
-        "sol_get_rent_sysvar",
-        (SyscallGetRentSysvar::vm, SyscallGetRentSysvar::codegen),
-    )?;
+    SyscallGetRentSysvar::register(&mut result, "sol_get_rent_sysvar")?;
 
     register_feature_gated_function!(
         result,
         last_restart_slot_syscall_enabled,
         "sol_get_last_restart_slot",
-        (
-            SyscallGetLastRestartSlotSysvar::vm,
-            SyscallGetLastRestartSlotSysvar::codegen
-        ),
+        SyscallGetLastRestartSlotSysvar
     )?;
 
-    result.register_function(
-        "sol_get_epoch_rewards_sysvar",
-        (
-            SyscallGetEpochRewardsSysvar::vm,
-            SyscallGetEpochRewardsSysvar::codegen,
-        ),
-    )?;
+    SyscallGetEpochRewardsSysvar::register(&mut result, "sol_get_epoch_rewards_sysvar")?;
 
     // Memory ops
-    result.register_function("sol_memcpy_", (SyscallMemcpy::vm, SyscallMemcpy::codegen))?;
-    result.register_function(
-        "sol_memmove_",
-        (SyscallMemmove::vm, SyscallMemmove::codegen),
-    )?;
-    result.register_function("sol_memset_", (SyscallMemset::vm, SyscallMemset::codegen))?;
-    result.register_function("sol_memcmp_", (SyscallMemcmp::vm, SyscallMemcmp::codegen))?;
+    SyscallMemcpy::register(&mut result, "sol_memcpy_")?;
+    SyscallMemmove::register(&mut result, "sol_memmove_")?;
+    SyscallMemset::register(&mut result, "sol_memset_")?;
+    SyscallMemcmp::register(&mut result, "sol_memcmp_")?;
 
     // Processed sibling instructions
-    result.register_function(
+    SyscallGetProcessedSiblingInstruction::register(
+        &mut result,
         "sol_get_processed_sibling_instruction",
-        (
-            SyscallGetProcessedSiblingInstruction::vm,
-            SyscallGetProcessedSiblingInstruction::codegen,
-        ),
     )?;
 
     // Stack height
-    result.register_function(
-        "sol_get_stack_height",
-        (SyscallGetStackHeight::vm, SyscallGetStackHeight::codegen),
-    )?;
+    SyscallGetStackHeight::register(&mut result, "sol_get_stack_height")?;
 
     // Return data
-    result.register_function(
-        "sol_set_return_data",
-        (SyscallSetReturnData::vm, SyscallSetReturnData::codegen),
-    )?;
-    result.register_function(
-        "sol_get_return_data",
-        (SyscallGetReturnData::vm, SyscallGetReturnData::codegen),
-    )?;
+    SyscallSetReturnData::register(&mut result, "sol_set_return_data")?;
+    SyscallGetReturnData::register(&mut result, "sol_get_return_data")?;
 
     // Cross-program invocation
-    result.register_function(
-        "sol_invoke_signed_c",
-        (SyscallInvokeSignedC::vm, SyscallInvokeSignedC::codegen),
-    )?;
-    result.register_function(
-        "sol_invoke_signed_rust",
-        (
-            SyscallInvokeSignedRust::vm,
-            SyscallInvokeSignedRust::codegen,
-        ),
-    )?;
+    SyscallInvokeSignedC::register(&mut result, "sol_invoke_signed_c")?;
+    SyscallInvokeSignedRust::register(&mut result, "sol_invoke_signed_rust")?;
 
     // Memory allocator
     register_feature_gated_function!(
         result,
         !disable_deploy_of_alloc_free_syscall,
         "sol_alloc_free_",
-        (SyscallAllocFree::vm, SyscallAllocFree::codegen),
+        SyscallAllocFree
     )?;
 
     // Alt_bn128
@@ -564,7 +471,7 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         enable_alt_bn128_syscall,
         "sol_alt_bn128_group_op",
-        (SyscallAltBn128::vm, SyscallAltBn128::codegen),
+        SyscallAltBn128
     )?;
 
     // Big_mod_exp
@@ -572,7 +479,7 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         enable_big_mod_exp_syscall,
         "sol_big_mod_exp",
-        (SyscallBigModExp::vm, SyscallBigModExp::codegen),
+        SyscallBigModExp
     )?;
 
     // Poseidon
@@ -580,7 +487,7 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         enable_poseidon_syscall,
         "sol_poseidon",
-        (SyscallPoseidon::vm, SyscallPoseidon::codegen),
+        SyscallPoseidon
     )?;
 
     // Accessing remaining compute units
@@ -588,10 +495,7 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         remaining_compute_units_syscall_enabled,
         "sol_remaining_compute_units",
-        (
-            SyscallRemainingComputeUnits::vm,
-            SyscallRemainingComputeUnits::codegen
-        )
+        SyscallRemainingComputeUnits
     )?;
 
     // Alt_bn128_compression
@@ -599,10 +503,7 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         enable_alt_bn128_compression_syscall,
         "sol_alt_bn128_compression",
-        (
-            SyscallAltBn128Compression::vm,
-            SyscallAltBn128Compression::codegen
-        ),
+        SyscallAltBn128Compression
     )?;
 
     // Sysvar getter
@@ -610,7 +511,7 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         get_sysvar_syscall_enabled,
         "sol_get_sysvar",
-        (SyscallGetSysvar::vm, SyscallGetSysvar::codegen),
+        SyscallGetSysvar
     )?;
 
     // Get Epoch Stake
@@ -618,14 +519,11 @@ pub fn create_program_runtime_environment_v1<'a, 'ix_data>(
         result,
         enable_get_epoch_stake_syscall,
         "sol_get_epoch_stake",
-        (SyscallGetEpochStake::vm, SyscallGetEpochStake::codegen),
+        SyscallGetEpochStake
     )?;
 
     // Log data
-    result.register_function(
-        "sol_log_data",
-        (SyscallLogData::vm, SyscallLogData::codegen),
-    )?;
+    SyscallLogData::register(&mut result, "sol_log_data")?;
 
     Ok(result)
 }

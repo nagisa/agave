@@ -2523,7 +2523,9 @@ pub mod tests {
         solana_instruction::{Instruction, error::InstructionError},
         solana_keypair::Keypair,
         solana_native_token::LAMPORTS_PER_SOL,
-        solana_program_runtime::declare_process_instruction,
+        solana_program_runtime::{
+            declare_process_instruction, solana_sbpf::program::BuiltinFunctionDefinition,
+        },
         solana_pubkey::Pubkey,
         solana_runtime::{
             bank::bank_hash_details::SlotDetails,
@@ -3683,7 +3685,7 @@ pub mod tests {
         let (bank, _bank_forks) = Bank::new_with_mockup_builtin_for_tests(
             &genesis_config,
             mock_program_id,
-            (MockBuiltinOk::vm, MockBuiltinOk::codegen),
+            MockBuiltinOk::register,
         );
 
         let tx = Transaction::new_signed_with_payer(
@@ -3727,7 +3729,7 @@ pub mod tests {
             let (bank, _bank_forks) = Bank::new_with_mockup_builtin_for_tests(
                 &genesis_config,
                 mock_program_id,
-                (MockBuiltinErr::vm, MockBuiltinErr::codegen),
+                MockBuiltinErr::register,
             );
 
             let tx = Transaction::new_signed_with_payer(

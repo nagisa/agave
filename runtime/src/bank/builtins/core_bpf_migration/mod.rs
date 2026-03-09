@@ -528,7 +528,13 @@ pub(crate) mod tests {
         solana_loader_v3_interface::{get_program_data_address, state::UpgradeableLoaderState},
         solana_message::Message,
         solana_native_token::LAMPORTS_PER_SOL,
-        solana_program_runtime::loaded_programs::{ProgramCacheEntry, ProgramCacheEntryType},
+        solana_program_runtime::{
+            loaded_programs::{ProgramCacheEntry, ProgramCacheEntryType},
+            solana_sbpf::{
+                self, memory_region::MemoryMapping, program::BuiltinFunctionDefinition,
+                vm::ContextObject,
+            },
+        },
         solana_pubkey::Pubkey,
         solana_sdk_ids::{bpf_loader, bpf_loader_upgradeable, native_loader, system_program},
         solana_signer::Signer,
@@ -536,6 +542,25 @@ pub(crate) mod tests {
         std::{fs::File, io::Read, sync::Arc},
         test_case::test_case,
     };
+
+    struct NoopBuiltin;
+    impl<C: ContextObject> BuiltinFunctionDefinition<C> for NoopBuiltin {
+        type Error = Box<dyn std::error::Error>;
+        fn rust(
+            _: &mut C,
+            _: u64,
+            _: u64,
+            _: u64,
+            _: u64,
+            _: u64,
+            _: &mut MemoryMapping,
+        ) -> Result<u64, Box<dyn std::error::Error>> {
+            Ok(0)
+        }
+
+        fn vm(_: *mut solana_sbpf::vm::EbpfVm<C>, _: u64, _: u64, _: u64, _: u64, _: u64) {}
+        fn codegen(_: &mut solana_sbpf::program::JitCompiler<C>) {}
+    }
 
     fn test_elf() -> Vec<u8> {
         let mut elf = Vec::new();
@@ -770,14 +795,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(
-                    0,
-                    builtin_name.len(),
-                    (
-                        |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
-                        |_| {},
-                    ),
-                ),
+                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
             );
             account
         };
@@ -913,14 +931,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(
-                    0,
-                    builtin_name.len(),
-                    (
-                        |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
-                        |_| {},
-                    ),
-                ),
+                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
             );
             account
         };
@@ -970,14 +981,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(
-                    0,
-                    builtin_name.len(),
-                    (
-                        |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
-                        |_| {},
-                    ),
-                ),
+                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
             );
             account
         };
@@ -1027,14 +1031,7 @@ pub(crate) mod tests {
             bank.add_builtin(
                 builtin_id,
                 builtin_name.as_str(),
-                ProgramCacheEntry::new_builtin(
-                    0,
-                    builtin_name.len(),
-                    (
-                        |_invoke_context, _param0, _param1, _param2, _param3, _param4| {},
-                        |_| {},
-                    ),
-                ),
+                ProgramCacheEntry::new_builtin(0, builtin_name.len(), NoopBuiltin::register),
             );
             account
         };
@@ -1449,7 +1446,7 @@ pub(crate) mod tests {
             ProgramCacheEntry::new_builtin(
                 0,
                 cpi_program_name.len(),
-                (cpi_mockup::Entrypoint::vm, cpi_mockup::Entrypoint::codegen),
+                cpi_mockup::Entrypoint::register,
             ),
         );
 
@@ -1986,7 +1983,7 @@ pub(crate) mod tests {
             ProgramCacheEntry::new_builtin(
                 0,
                 cpi_program_name.len(),
-                (cpi_mockup::Entrypoint::vm, cpi_mockup::Entrypoint::codegen),
+                cpi_mockup::Entrypoint::register,
             ),
         );
 
@@ -2239,7 +2236,7 @@ pub(crate) mod tests {
             ProgramCacheEntry::new_builtin(
                 0,
                 cpi_program_name.len(),
-                (cpi_mockup::Entrypoint::vm, cpi_mockup::Entrypoint::codegen),
+                cpi_mockup::Entrypoint::register,
             ),
         );
 
@@ -2304,7 +2301,7 @@ pub(crate) mod tests {
             ProgramCacheEntry::new_builtin(
                 0,
                 cpi_program_name.len(),
-                (cpi_mockup::Entrypoint::vm, cpi_mockup::Entrypoint::codegen),
+                cpi_mockup::Entrypoint::register,
             ),
         );
 

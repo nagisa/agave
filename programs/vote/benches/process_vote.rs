@@ -110,17 +110,17 @@ fn bench_process_deprecated_vote_instruction(
     let mut deprecated_feature_set = FeatureSet::all_enabled();
     deprecated_feature_set.deactivate(&deprecate_legacy_vote_ixs::id());
     bencher.iter(|| {
-        mock_process_instruction_with_feature_set(
+        mock_process_instruction_with_feature_set::<
+            solana_vote_program::vote_processor::Entrypoint,
+            _,
+            _,
+        >(
             &solana_vote_program::id(),
             None,
             &instruction_data,
             transaction_accounts.clone(),
             instruction_account_metas.clone(),
             Ok(()),
-            (
-                solana_vote_program::vote_processor::Entrypoint::vm,
-                solana_vote_program::vote_processor::Entrypoint::codegen,
-            ),
             |_invoke_context| {},
             |_invoke_context| {},
             &deprecated_feature_set.runtime_features(),
@@ -135,17 +135,13 @@ fn bench_process_vote_instruction(
     instruction_data: Vec<u8>,
 ) {
     bencher.iter(|| {
-        mock_process_instruction(
+        mock_process_instruction::<solana_vote_program::vote_processor::Entrypoint, _, _>(
             &solana_vote_program::id(),
             None,
             &instruction_data,
             transaction_accounts.clone(),
             instruction_account_metas.clone(),
             Ok(()),
-            (
-                solana_vote_program::vote_processor::Entrypoint::vm,
-                solana_vote_program::vote_processor::Entrypoint::codegen,
-            ),
             |_invoke_context| {},
             |_invoke_context| {},
         );

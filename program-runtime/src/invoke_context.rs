@@ -15,10 +15,10 @@ use {
     solana_pubkey::Pubkey,
     solana_sbpf::{
         ebpf::MM_HEAP_START,
-        elf::Executable as GenericExecutable,
+        elf::{ElfError, Executable as GenericExecutable},
         error::{EbpfError, ProgramResult},
         memory_region::MemoryMapping,
-        program::{BuiltinCodegen, BuiltinFunction, SBPFVersion},
+        program::{BuiltinFunctionDefinition, BuiltinProgram, SBPFVersion},
         vm::{Config, ContextObject, EbpfVm},
     },
     solana_sdk_ids::{
@@ -45,11 +45,8 @@ use {
     },
 };
 
-pub type BuiltinFunctionWithContext = BuiltinFunction<InvokeContext<'static, 'static>>;
-pub type BuiltinWithContext = (
-    BuiltinFunctionWithContext,
-    BuiltinCodegen<InvokeContext<'static, 'static>>,
-);
+pub type BuiltinFunctionRegisterFn =
+    fn(&mut BuiltinProgram<InvokeContext<'static, 'static>>, &str) -> Result<(), ElfError>;
 pub type Executable = GenericExecutable<InvokeContext<'static, 'static>>;
 pub type RegisterTrace<'a> = &'a [[u64; 12]];
 
@@ -67,7 +64,7 @@ macro_rules! declare_process_instruction {
                 _arg3: u64,
                 _arg4: u64,
                 _memory_mapping: &mut $crate::solana_sbpf::memory_region::MemoryMapping,
-            ) -> std::result::Result<u64, Box<dyn std::error::Error>> {
+            ) -> Result<u64, Box<dyn std::error::Error>> {
                 fn process_instruction_inner(
                     $invoke_context: &mut $crate::invoke_context::InvokeContext,
                 ) -> std::result::Result<(), $crate::__private::InstructionError>
@@ -912,22 +909,22 @@ macro_rules! with_mock_invoke_context {
     };
 }
 
-#[expect(clippy::too_many_arguments)]
-pub fn mock_process_instruction_with_feature_set<
-    F: FnMut(&mut InvokeContext),
-    G: FnMut(&mut InvokeContext),
->(
+pub fn mock_process_instruction_with_feature_set<BuiltinFunction, F, G>(
     loader_id: &Pubkey,
     program_index: Option<IndexOfAccount>,
     instruction_data: &[u8],
     mut transaction_accounts: Vec<KeyedAccountSharedData>,
     instruction_account_metas: Vec<AccountMeta>,
     expected_result: Result<(), InstructionError>,
-    builtin_function: BuiltinWithContext,
     mut pre_adjustments: F,
     mut post_adjustments: G,
     feature_set: &SVMFeatureSet,
-) -> Vec<AccountSharedData> {
+) -> Vec<AccountSharedData>
+where
+    BuiltinFunction: BuiltinFunctionDefinition<InvokeContext<'static, 'static>>,
+    F: FnMut(&mut InvokeContext),
+    G: FnMut(&mut InvokeContext),
+{
     let mut instruction_accounts: Vec<InstructionAccount> =
         Vec::with_capacity(instruction_account_metas.len());
     for account_meta in instruction_account_metas.iter() {
@@ -971,7 +968,11 @@ pub fn mock_process_instruction_with_feature_set<
     let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
     program_cache_for_tx_batch.replenish(
         *loader_id,
-        Arc::new(ProgramCacheEntry::new_builtin(0, 0, builtin_function)),
+        Arc::new(ProgramCacheEntry::new_builtin(
+            0,
+            0,
+            BuiltinFunction::register,
+        )),
     );
     program_cache_for_tx_batch.set_slot_for_tests(
         invoke_context
@@ -1001,25 +1002,28 @@ pub fn mock_process_instruction_with_feature_set<
     transaction_accounts
 }
 
-pub fn mock_process_instruction<F: FnMut(&mut InvokeContext), G: FnMut(&mut InvokeContext)>(
+pub fn mock_process_instruction<BuiltinFunction, F, G>(
     loader_id: &Pubkey,
     program_index: Option<IndexOfAccount>,
     instruction_data: &[u8],
     transaction_accounts: Vec<KeyedAccountSharedData>,
     instruction_account_metas: Vec<AccountMeta>,
     expected_result: Result<(), InstructionError>,
-    builtin_function: BuiltinWithContext,
     pre_adjustments: F,
     post_adjustments: G,
-) -> Vec<AccountSharedData> {
-    mock_process_instruction_with_feature_set(
+) -> Vec<AccountSharedData>
+where
+    BuiltinFunction: BuiltinFunctionDefinition<InvokeContext<'static, 'static>>,
+    F: FnMut(&mut InvokeContext),
+    G: FnMut(&mut InvokeContext),
+{
+    mock_process_instruction_with_feature_set::<BuiltinFunction, _, _>(
         loader_id,
         program_index,
         instruction_data,
         transaction_accounts,
         instruction_account_metas,
         expected_result,
-        builtin_function,
         pre_adjustments,
         post_adjustments,
         &SVMFeatureSet::all_enabled(),
@@ -1343,11 +1347,7 @@ mod tests {
         let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         program_cache_for_tx_batch.replenish(
             callee_program_id,
-            Arc::new(ProgramCacheEntry::new_builtin(
-                0,
-                1,
-                (MockBuiltin::vm, MockBuiltin::codegen),
-            )),
+            Arc::new(ProgramCacheEntry::new_builtin(0, 1, MockBuiltin::register)),
         );
         invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
 
@@ -1402,11 +1402,7 @@ mod tests {
         let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         program_cache_for_tx_batch.replenish(
             callee_program_id,
-            Arc::new(ProgramCacheEntry::new_builtin(
-                0,
-                1,
-                (MockBuiltin::vm, MockBuiltin::codegen),
-            )),
+            Arc::new(ProgramCacheEntry::new_builtin(0, 1, MockBuiltin::register)),
         );
         invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
 
@@ -1490,11 +1486,7 @@ mod tests {
         let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         program_cache_for_tx_batch.replenish(
             program_key,
-            Arc::new(ProgramCacheEntry::new_builtin(
-                0,
-                0,
-                (MockBuiltin::vm, MockBuiltin::codegen),
-            )),
+            Arc::new(ProgramCacheEntry::new_builtin(0, 0, MockBuiltin::register)),
         );
         invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
 
@@ -1782,11 +1774,7 @@ mod tests {
         let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         program_cache_for_tx_batch.replenish(
             TEST_CALLEE_PROGRAM_ID,
-            Arc::new(ProgramCacheEntry::new_builtin(
-                0,
-                1,
-                (MockBuiltin::vm, MockBuiltin::codegen),
-            )),
+            Arc::new(ProgramCacheEntry::new_builtin(0, 1, MockBuiltin::register)),
         );
         invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
 

@@ -39,7 +39,7 @@ use {
     solana_program_entrypoint::{SUCCESS, deserialize},
     solana_program_error::{ProgramError, ProgramResult},
     solana_program_runtime::{
-        invoke_context::BuiltinWithContext, loaded_programs::ProgramCacheEntry,
+        invoke_context::BuiltinFunctionRegisterFn, loaded_programs::ProgramCacheEntry,
         serialization::serialize_parameters, stable_log, sysvar_cache::SysvarCache,
     },
     solana_pubkey::Pubkey,
@@ -82,6 +82,8 @@ pub use {
     solana_program_runtime::invoke_context::InvokeContext,
     solana_sbpf::{
         error::EbpfError,
+        memory_region::MemoryMapping,
+        program::BuiltinFunctionDefinition,
         vm::{EbpfVm, get_runtime_environment_key},
     },
     solana_transaction_context::IndexOfAccount,
@@ -207,8 +209,28 @@ pub fn invoke_builtin_function(
 #[macro_export]
 macro_rules! processor {
     ($builtin_function:expr) => {{
-        const CONVERTER: solana_program_runtime::invoke_context::BuiltinFunctionWithContext =
-            |vm, _arg0, _arg1, _arg2, _arg3, _arg4| {
+        struct Converter;
+        impl $crate::BuiltinFunctionDefinition<$crate::InvokeContext<'_, '_>> for Converter {
+            type Error = Box<dyn std::error::Error>;
+            fn rust(
+                _: &mut $crate::InvokeContext<'_, '_>,
+                _: u64,
+                _: u64,
+                _: u64,
+                _: u64,
+                _: u64,
+                _: &mut $crate::MemoryMapping,
+            ) -> Result<u64, Box<dyn std::error::Error>> {
+                unreachable!()
+            }
+            fn vm(
+                vm: *mut $crate::EbpfVm<$crate::InvokeContext>,
+                _: u64,
+                _: u64,
+                _: u64,
+                _: u64,
+                _: u64,
+            ) {
                 let vm = unsafe {
                     &mut *((vm as *mut u64)
                         .offset(-($crate::get_runtime_environment_key() as isize))
@@ -218,8 +240,9 @@ macro_rules! processor {
                     $crate::invoke_builtin_function($builtin_function, vm.context_object_pointer)
                         .map_err(|err| $crate::EbpfError::SyscallError(err))
                         .into();
-            };
-        Some((CONVERTER, |jit| jit.emit_external_call(CONVERTER)))
+            }
+        };
+        Some(<Converter as $crate::BuiltinFunctionDefinition<_>>::register)
     }};
 }
 
@@ -632,10 +655,10 @@ impl ProgramTest {
     pub fn new(
         program_name: &'static str,
         program_id: Pubkey,
-        builtin_function: Option<BuiltinWithContext>,
+        builtin: Option<BuiltinFunctionRegisterFn>,
     ) -> Self {
         let mut me = Self::default();
-        me.add_program(program_name, program_id, builtin_function);
+        me.add_program(program_name, program_id, builtin);
         me
     }
 
@@ -759,7 +782,7 @@ impl ProgramTest {
         &mut self,
         program_name: &'static str,
         program_id: Pubkey,
-        builtin_function: Option<BuiltinWithContext>,
+        builtin_function: Option<BuiltinFunctionRegisterFn>,
     ) {
         let add_bpf = |this: &mut ProgramTest, program_file: PathBuf| {
             let data = read_file(&program_file);
@@ -863,13 +886,13 @@ impl ProgramTest {
         &mut self,
         program_name: &'static str,
         program_id: Pubkey,
-        builtin_function: BuiltinWithContext,
+        builtin: BuiltinFunctionRegisterFn,
     ) {
         info!("\"{program_name}\" builtin program");
         self.builtin_programs.push((
             program_id,
             program_name,
-            ProgramCacheEntry::new_builtin(0, program_name.len(), builtin_function),
+            ProgramCacheEntry::new_builtin(0, program_name.len(), builtin),
         ));
     }
 

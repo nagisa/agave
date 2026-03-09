@@ -1,5 +1,5 @@
 use {
-    crate::invoke_context::{BuiltinWithContext, InvokeContext},
+    crate::invoke_context::{BuiltinFunctionRegisterFn, InvokeContext},
     log::{debug, error, log_enabled, trace},
     percentage::PercentageInteger,
     solana_clock::{Epoch, Slot},
@@ -436,12 +436,10 @@ impl ProgramCacheEntry {
     pub fn new_builtin(
         deployment_slot: Slot,
         account_size: usize,
-        builtin_function: BuiltinWithContext,
+        register_fn: BuiltinFunctionRegisterFn,
     ) -> Self {
         let mut program = BuiltinProgram::new_builtin();
-        program
-            .register_function("entrypoint", builtin_function)
-            .unwrap();
+        register_fn(&mut program, "entrypoint").unwrap();
         Self {
             deployment_slot,
             account_owner: ProgramCacheEntryOwner::NativeLoader,

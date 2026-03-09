@@ -529,14 +529,13 @@ mod tests {
             )
             .collect::<Vec<_>>();
 
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &loader_v4::id(),
             program_index,
             instruction_data,
             transaction_accounts,
             instruction_accounts,
             expected_result,
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context| {
                 test_utils::load_all_invoked_programs(invoke_context);
             },

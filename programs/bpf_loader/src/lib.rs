@@ -1248,14 +1248,13 @@ mod tests {
         instruction_accounts: Vec<AccountMeta>,
         expected_result: Result<(), InstructionError>,
     ) -> Vec<AccountSharedData> {
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             loader_id,
             program_index,
             instruction_data,
             transaction_accounts,
             instruction_accounts,
             expected_result,
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context| {
                 test_utils::load_all_invoked_programs(invoke_context);
             },
@@ -1336,14 +1335,13 @@ mod tests {
         );
 
         // Case: limited budget
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &loader_id,
             Some(0),
             &[],
             vec![(program_id, program_account)],
             Vec::new(),
             Err(InstructionError::ProgramFailedToComplete),
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context| {
                 invoke_context.mock_set_remaining(0);
                 test_utils::load_all_invoked_programs(invoke_context);
@@ -1352,14 +1350,13 @@ mod tests {
         );
 
         // Case: Account not a program
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &loader_id,
             Some(0),
             &[],
             vec![(program_id, parameter_account.clone())],
             Vec::new(),
             Err(InstructionError::UnsupportedProgramId),
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context| {
                 test_utils::load_all_invoked_programs(invoke_context);
             },
@@ -1894,14 +1891,13 @@ mod tests {
         ) -> Vec<AccountSharedData> {
             let instruction_data =
                 bincode::serialize(&UpgradeableLoaderInstruction::Upgrade).unwrap();
-            mock_process_instruction(
+            mock_process_instruction::<Entrypoint, _, _>(
                 &bpf_loader_upgradeable::id(),
                 None,
                 &instruction_data,
                 transaction_accounts,
                 instruction_accounts,
                 expected_result,
-                (Entrypoint::vm, Entrypoint::codegen),
                 |_invoke_context| {},
                 |_invoke_context| {},
             )
@@ -2044,14 +2040,13 @@ mod tests {
         *instruction_accounts.get_mut(1).unwrap() = instruction_accounts.get(2).unwrap().clone();
         let instruction_data = bincode::serialize(&UpgradeableLoaderInstruction::Upgrade).unwrap();
 
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &bpf_loader_upgradeable::id(),
             None,
             &instruction_data,
             transaction_accounts.clone(),
             instruction_accounts.clone(),
             Err(InstructionError::InvalidAccountData),
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context| {
                 test_utils::load_all_invoked_programs(invoke_context);
             },

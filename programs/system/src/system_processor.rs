@@ -614,14 +614,13 @@ mod tests {
         instruction_accounts: Vec<AccountMeta>,
         expected_result: Result<(), InstructionError>,
     ) -> Vec<AccountSharedData> {
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &system_program::id(),
             None,
             instruction_data,
             transaction_accounts,
             instruction_accounts,
             expected_result,
-            (Entrypoint::vm, Entrypoint::codegen),
             |_invoke_context| {},
             |_invoke_context| {},
         )
@@ -1611,7 +1610,7 @@ mod tests {
                 IterItem(0u64, &blockhash, 0);
                 sysvar::recent_blockhashes::MAX_ENTRIES
             ]);
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &system_program::id(),
             None,
             &serialize(&SystemInstruction::AdvanceNonceAccount).unwrap(),
@@ -1632,7 +1631,6 @@ mod tests {
                 },
             ],
             Ok(()),
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context: &mut InvokeContext| {
                 invoke_context.environment_config.blockhash = hash(&serialize(&0).unwrap());
             },
@@ -1907,7 +1905,7 @@ mod tests {
         );
         #[allow(deprecated)]
         let new_recent_blockhashes_account = create_recent_blockhashes_account_for_test(vec![]);
-        mock_process_instruction(
+        mock_process_instruction::<Entrypoint, _, _>(
             &system_program::id(),
             None,
             &serialize(&SystemInstruction::AdvanceNonceAccount).unwrap(),
@@ -1928,7 +1926,6 @@ mod tests {
                 },
             ],
             Err(SystemError::NonceNoRecentBlockhashes.into()),
-            (Entrypoint::vm, Entrypoint::codegen),
             |invoke_context: &mut InvokeContext| {
                 invoke_context.environment_config.blockhash = hash(&serialize(&0).unwrap());
             },
@@ -2164,7 +2161,7 @@ mod tests {
 
         // Feature gate off - instruction rejected
         use solana_program_runtime::invoke_context::mock_process_instruction_with_feature_set;
-        mock_process_instruction_with_feature_set(
+        mock_process_instruction_with_feature_set::<Entrypoint, _, _>(
             &system_program::id(),
             None,
             &bincode::serialize(&SystemInstruction::CreateAccountAllowPrefund {
@@ -2179,7 +2176,6 @@ mod tests {
             ],
             vec![AccountMeta::new(to, true), AccountMeta::new(from, true)],
             Err(InstructionError::InvalidInstructionData),
-            (Entrypoint::vm, Entrypoint::codegen),
             |_| {},
             |_| {},
             &solana_svm_feature_set::SVMFeatureSet::default(),

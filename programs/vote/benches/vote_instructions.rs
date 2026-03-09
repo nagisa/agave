@@ -177,14 +177,13 @@ fn process_instruction(
     instruction_accounts: Vec<AccountMeta>,
     expected_result: Result<(), InstructionError>,
 ) -> Vec<AccountSharedData> {
-    mock_process_instruction(
+    mock_process_instruction::<Entrypoint, _, _>(
         &id(),
         None,
         instruction_data,
         transaction_accounts,
         instruction_accounts,
         expected_result,
-        (Entrypoint::vm, Entrypoint::codegen),
         |_invoke_context| {},
         |_invoke_context| {},
     )
@@ -198,14 +197,13 @@ fn process_deprecated_instruction(
 ) -> Vec<AccountSharedData> {
     let mut deprecated_feature_set = FeatureSet::all_enabled();
     deprecated_feature_set.deactivate(&deprecate_legacy_vote_ixs::id());
-    mock_process_instruction_with_feature_set(
+    mock_process_instruction_with_feature_set::<Entrypoint, _, _>(
         &id(),
         None,
         instruction_data,
         transaction_accounts,
         instruction_accounts,
         expected_result,
-        (Entrypoint::vm, Entrypoint::codegen),
         |_invoke_context| {},
         |_invoke_context| {},
         &deprecated_feature_set.runtime_features(),
