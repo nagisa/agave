@@ -4,6 +4,7 @@ use {
     crate::invoke_context::{BuiltinFunctionRegisterer, InvokeContext},
     log::{debug, error, log_enabled, trace},
     percentage::PercentageInteger,
+    rand::rngs::ThreadRng,
     solana_clock::{Epoch, Slot},
     solana_pubkey::Pubkey,
     solana_sbpf::{elf::Executable, program::BuiltinProgram, verifier::RequisiteVerifier},
@@ -68,7 +69,8 @@ pub fn get_mock_program_runtime_environment() -> ProgramRuntimeEnvironment {
         .clone()
 }
 
-pub const MAX_LOADED_ENTRY_COUNT: usize = 512;
+pub const MAX_LOADED_ENTRY_COUNT: usize = 1024;
+pub const MAX_COMPILED_ENTRY_COUNT: usize = 512;
 pub const DELAY_VISIBILITY_SLOT_OFFSET: Slot = 1;
 
 /// Relationship between two fork IDs
@@ -1426,33 +1428,45 @@ impl<FG: ForkGraph> ProgramCache<FG> {
     /// Unloads programs which were used infrequently
     pub fn sort_and_unload(&mut self, shrink_to: PercentageInteger) {
         let mut sorted_candidates = self.get_flattened_entries();
-        sorted_candidates.sort_by_cached_key(|(_id, _last_modification_slot, program)| {
+        sorted_candidates.sort_unstable_by_key(|(_id, _last_modification_slot, program)| {
             program.stats.uses.load(Ordering::Relaxed)
         });
         let num_to_unload = sorted_candidates
             .len()
             .saturating_sub(shrink_to.apply_to(MAX_LOADED_ENTRY_COUNT));
-        for (program, last_modification_slot, entry) in sorted_candidates.iter().take(num_to_unload)
-        {
-            self.unload_program_entry(*program, *last_modification_slot, entry);
+        for (program, last_modification_slot, entry) in sorted_candidates.drain(..num_to_unload) {
+            self.unload_program_entry(program, last_modification_slot, &entry);
+        }
+        sorted_candidates.retain(|(_, _, entry)| match &entry.program {
+            ProgramCacheEntryType::Loaded(executable) => {
+                executable.get_compiled_program().is_some()
+            }
+            _ => false,
+        });
+        let num_to_uncompile = sorted_candidates
+            .len()
+            .saturating_sub(shrink_to.apply_to(MAX_COMPILED_ENTRY_COUNT));
+        for (_, _, entry) in sorted_candidates.iter().take(num_to_uncompile) {
+            if let ProgramCacheEntryType::Loaded(executable) = &entry.program {
+                executable.take_compiled_program();
+            }
         }
     }
 
     /// Evicts programs using 2's random selection, choosing the least used program out of the two entries.
     /// The eviction is performed enough number of times to reduce the cache usage to the given percentage.
     pub fn evict_using_2s_random_selection(&mut self, shrink_to: PercentageInteger, now: Slot) {
+        let mut rng = rng();
         let mut candidates = self.get_flattened_entries();
         self.stats
             .water_level
             .store(candidates.len() as u64, Ordering::Relaxed);
-        let num_to_unload = candidates
-            .len()
-            .saturating_sub(shrink_to.apply_to(MAX_LOADED_ENTRY_COUNT));
+
         fn random_index_and_usage_counter(
+            rng: &mut ThreadRng,
             candidates: &[(Pubkey, Slot, Arc<ProgramCacheEntry>)],
             now: Slot,
         ) -> (usize, u64) {
-            let mut rng = rng();
             // gen_range is deprecated in favor of random_range in rand>=0.9, but we also get
             // rnd() from shuttle, which doesn't yet support rand 0.9 APIs
             #[cfg(feature = "shuttle-test")]
@@ -1467,9 +1481,14 @@ impl<FG: ForkGraph> ProgramCache<FG> {
             (index, usage_counter)
         }
 
+        let num_to_unload = candidates
+            .len()
+            .saturating_sub(shrink_to.apply_to(MAX_LOADED_ENTRY_COUNT));
         for _ in 0..num_to_unload {
-            let (index1, usage_counter1) = random_index_and_usage_counter(&candidates, now);
-            let (index2, usage_counter2) = random_index_and_usage_counter(&candidates, now);
+            let (index1, usage_counter1) =
+                random_index_and_usage_counter(&mut rng, &candidates, now);
+            let (index2, usage_counter2) =
+                random_index_and_usage_counter(&mut rng, &candidates, now);
 
             let (id, last_modification_slot, entry) = if usage_counter1 < usage_counter2 {
                 candidates.swap_remove(index1)
@@ -1477,6 +1496,29 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                 candidates.swap_remove(index2)
             };
             self.unload_program_entry(id, last_modification_slot, &entry);
+        }
+        candidates.retain(|(_, _, entry)| match &entry.program {
+            ProgramCacheEntryType::Loaded(executable) => {
+                executable.get_compiled_program().is_some()
+            }
+            _ => false,
+        });
+        let num_to_uncompile = candidates
+            .len()
+            .saturating_sub(shrink_to.apply_to(MAX_COMPILED_ENTRY_COUNT));
+        for _ in 0..num_to_uncompile {
+            let (index1, usage_counter1) =
+                random_index_and_usage_counter(&mut rng, &candidates, now);
+            let (index2, usage_counter2) =
+                random_index_and_usage_counter(&mut rng, &candidates, now);
+            let (_, _, entry) = if usage_counter1 < usage_counter2 {
+                candidates.swap_remove(index1)
+            } else {
+                candidates.swap_remove(index2)
+            };
+            if let ProgramCacheEntryType::Loaded(executable) = &entry.program {
+                executable.take_compiled_program();
+            }
         }
     }
 
