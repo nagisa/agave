@@ -226,6 +226,7 @@ impl ProgramCacheEntryType {
 #[derive(Debug, Default)]
 pub struct ProgramStatistics {
     pub uses: AtomicU64,
+    pub load_us: AtomicU64,
 
     pub compilations: AtomicU64,
     pub total_compilation_time_us: AtomicU64,
@@ -314,6 +315,7 @@ impl ProgramStatistics {
     pub fn merge_from(&self, other: &ProgramStatistics) {
         let ord = Ordering::Relaxed;
         self.uses.fetch_add(other.uses.load(ord), ord);
+        self.load_us.fetch_add(other.load_us.load(ord), ord);
         let other_compilations = other.compilations.load(ord);
         let this_compilations = self.compilations.fetch_add(other_compilations, ord);
         self.total_compilation_time_us

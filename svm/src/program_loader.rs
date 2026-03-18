@@ -1,5 +1,6 @@
 #[cfg(feature = "metrics")]
 use solana_program_runtime::loaded_programs::LoadProgramMetrics;
+use solana_svm_measure::measure::Measure;
 use {
     solana_account::{AccountSharedData, ReadableAccount, state_traits::StateMut},
     solana_clock::Slot,
@@ -100,7 +101,9 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
     #[cfg(not(feature = "metrics"))]
     let _ = execute_timings;
 
+    let load_time = Measure::start("load_program_accounts");
     let (load_result, last_modification_slot) = load_program_accounts(callbacks, pubkey)?;
+    let load_us = load_time.end_as_us();
     let loaded_program = match load_result {
         ProgramAccountLoadResult::InvalidAccountData(owner) => Ok(
             ProgramCacheEntry::new_tombstone(current_slot, owner, ProgramCacheEntryType::Closed),
@@ -185,6 +188,10 @@ pub fn load_program_with_pubkey<CB: TransactionProcessingCallback>(
             ProgramCacheEntryType::FailedVerification(env),
         )
     });
+    loaded_program
+        .stats
+        .load_us
+        .fetch_add(load_us, std::sync::atomic::Ordering::Relaxed);
 
     #[cfg(feature = "metrics")]
     load_program_metrics.submit_datapoint(&mut execute_timings.details);
