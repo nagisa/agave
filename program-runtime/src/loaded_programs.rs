@@ -7,7 +7,6 @@ use {
     },
     log::error,
     percentage::PercentageInteger,
-    rand::rngs::ThreadRng,
     solana_clock::{Epoch, Slot},
     solana_pubkey::Pubkey,
     solana_sbpf::program::BuiltinProgram,
@@ -18,7 +17,7 @@ use {
     },
     std::{
         collections::{HashMap, hash_map::Entry},
-        sync::Weak,
+        sync::{Weak, atomic::AtomicU64},
     },
 };
 
@@ -114,7 +113,6 @@ pub fn get_mock_program_runtime_environment() -> ProgramRuntimeEnvironment {
 }
 
 pub const MAX_LOADED_ENTRY_COUNT: usize = 512;
-pub const MAX_COMPILED_ENTRY_COUNT: usize = 512;
 
 /// Relationship between two fork IDs
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -361,7 +359,7 @@ const COMPILE_REQUEST_CHANNEL_SIZE: usize = 64;
 
 impl<FG: ForkGraph> ProgramCache<FG> {
     pub fn new(root_slot: Slot) -> Self {
-        let (compile_send, compile_recv) = crossbeam_channel::bounded::<(
+        let (compilation_requests, compile_recv) = crossbeam_channel::bounded::<(
             Arc<ProgramCacheEntry>,
             Arc<AtomicU64>,
         )>(COMPILE_REQUEST_CHANNEL_SIZE);
@@ -383,6 +381,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
 
                     #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
                     {
+                        use solana_svm_measure::measure::Measure;
                         let jit_compile_time = Measure::start("jit_compile_time");
                         if let Err(e) = executable.jit_compile() {
                             log::warn!("compiling failed even though program is valid: {e:?}");
@@ -402,7 +401,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
             stats: ProgramCacheStats::default(),
             fork_graph: None,
             loading_task_waiter: Arc::new(LoadingTaskWaiter::default()),
-            compilation_requests: compile_send,
+            compilation_requests,
         }
     }
 
@@ -854,20 +853,6 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         for (program, last_modification_slot, entry) in sorted_candidates.drain(..num_to_unload) {
             self.unload_program_entry(program, last_modification_slot, &entry);
         }
-        sorted_candidates.retain(|(_, _, entry)| match &entry.program {
-            ProgramCacheEntryType::Loaded(executable) => {
-                executable.get_compiled_program().is_some()
-            }
-            _ => false,
-        });
-        let num_to_uncompile = sorted_candidates
-            .len()
-            .saturating_sub(shrink_to.apply_to(MAX_COMPILED_ENTRY_COUNT));
-        for (_, _, entry) in sorted_candidates.iter().take(num_to_uncompile) {
-            if let ProgramCacheEntryType::Loaded(executable) = &entry.program {
-                executable.take_compiled_program();
-            }
-        }
     }
 
     /// Evicts programs using random selection, choosing the worst scoring program out of the
@@ -908,7 +893,7 @@ impl<FG: ForkGraph> ProgramCache<FG> {
         // relatively arbitrary.
         const MAX_ADDITIONAL_SAMPLES: usize = 3;
         let avoid_evicting_above_score = retention_score(now, 500 * EMA_SCALE, 500);
-        for _ in 0..num_to_unload {
+        let mut select_entry = |candidates: &mut Vec<(Pubkey, u64, Arc<ProgramCacheEntry>)>| {
             let (mut index, mut score) = sample_entry(&candidates);
             for _ in 0..MAX_ADDITIONAL_SAMPLES {
                 let (sample_index, sample_score) = sample_entry(&candidates);
@@ -920,31 +905,12 @@ impl<FG: ForkGraph> ProgramCache<FG> {
                     break;
                 }
             }
-            let (id, last_modification_slot, entry) = candidates.swap_remove(index);
+            candidates.swap_remove(index)
+        };
+
+        for _ in 0..num_to_unload {
+            let (id, last_modification_slot, entry) = select_entry(&mut candidates);
             self.unload_program_entry(id, last_modification_slot, &entry);
-        }
-        candidates.retain(|(_, _, entry)| match &entry.program {
-            ProgramCacheEntryType::Loaded(executable) => {
-                executable.get_compiled_program().is_some()
-            }
-            _ => false,
-        });
-        let num_to_uncompile = candidates
-            .len()
-            .saturating_sub(shrink_to.apply_to(MAX_COMPILED_ENTRY_COUNT));
-        for _ in 0..num_to_uncompile {
-            let (index1, usage_counter1) =
-                random_index_and_usage_counter(&mut rng, &candidates, now);
-            let (index2, usage_counter2) =
-                random_index_and_usage_counter(&mut rng, &candidates, now);
-            let (_, _, entry) = if usage_counter1 < usage_counter2 {
-                candidates.swap_remove(index1)
-            } else {
-                candidates.swap_remove(index2)
-            };
-            if let ProgramCacheEntryType::Loaded(executable) = &entry.program {
-                executable.take_compiled_program();
-            }
         }
     }
 

@@ -267,7 +267,7 @@ impl LoadProgramMetrics {
         timings.create_executor_register_syscalls_us += self.register_syscalls_us;
         timings.create_executor_load_elf_us += self.load_elf_us;
         timings.create_executor_verify_code_us += self.verify_code_us;
-        timings.create_executor_jit_compile_us += self.jit_compile_us;
+        timings.create_executor_jit_compile_us.fetch_add(self.jit_compile_us, Ordering::Relaxed);
     }
 }
 

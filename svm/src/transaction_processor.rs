@@ -316,12 +316,27 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             .iter()
             .map(|key| (*key, ProgramCacheMatchCriteria::NoCriteria, 0))
             .collect();
+        // TODO: reuse same read lock...
+        let compilation_requests = self
+            .global_program_cache
+            .read()
+            .unwrap()
+            .compilation_requests
+            .clone();
+
         self.global_program_cache.read().unwrap().extract(
             &mut search_for,
             &mut builtin_program_cache,
             &environments,
             false,
             false,
+            |_key, program| {
+                let _ = compilation_requests.try_send((
+                    Arc::clone(program),
+                    todo!(),
+                    // Arc::clone(&execute_timings.details.create_executor_jit_compile_us),
+                ));
+            },
         );
 
         Self {
