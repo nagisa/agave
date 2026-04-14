@@ -84,6 +84,7 @@ pub struct FeatureSnapshot {
     pub validator_admission_ticket: bool,
     pub direct_account_pointers_in_program_input: bool,
     pub upgrade_bpf_stake_program_to_v5: bool,
+    pub program_runtime_abiv2: bool,
 }
 
 impl From<&AHashMap<Pubkey, u64>> for FeatureSnapshot {
@@ -194,6 +195,7 @@ impl From<&AHashMap<Pubkey, u64>> for FeatureSnapshot {
                 &direct_account_pointers_in_program_input::ID,
             ),
             upgrade_bpf_stake_program_to_v5: is_active(&upgrade_bpf_stake_program_to_v5::ID),
+            program_runtime_abiv2: is_active(&program_runtime_abiv2::ID),
         }
     }
 }
@@ -356,6 +358,7 @@ impl FeatureSet {
             vote_account_initialize_v2: snapshot.vote_account_initialize_v2,
             direct_account_pointers_in_program_input: snapshot
                 .direct_account_pointers_in_program_input,
+            program_runtime_abiv2: snapshot.program_runtime_abiv2,
         }
     }
 }
@@ -1509,6 +1512,10 @@ pub mod upgrade_bpf_stake_program_to_v5 {
     }
 }
 
+pub mod program_runtime_abiv2 {
+    solana_pubkey::declare_id!("AB1v2ExperimentaL111111111111111111111111111");
+}
+
 pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::new(|| {
     [
         (secp256k1_program_enabled::id(), "secp256k1 program"),
@@ -2548,6 +2555,10 @@ pub static FEATURE_NAMES: LazyLock<AHashMap<Pubkey, &'static str>> = LazyLock::n
         (
             upgrade_bpf_stake_program_to_v5::id(),
             "SIMD-0490: Upgrade BPF Stake Program to v5.0.0",
+        ),
+        (
+            program_runtime_abiv2::id(),
+            "SIMD-0177: Program runtime ABIv2",
         ),
         /*************** ADD NEW FEATURES HERE ***************/
         /***** ADD NEW FEATURE BOOL TO `FeatureSnapshot` *****/
