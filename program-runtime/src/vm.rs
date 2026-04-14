@@ -13,10 +13,12 @@ use {
     solana_instruction::error::InstructionError,
     solana_program_entrypoint::{MAX_PERMITTED_DATA_INCREASE, SUCCESS},
     solana_sbpf::{
+        aligned_memory::AlignedMemory,
         ebpf::{self, MM_HEAP_START},
         elf::Executable,
         error::{EbpfError, ProgramResult},
         memory_region::{AccessType, MemoryMapping, MemoryRegion},
+        program::SBPFVersion,
         vm::{ContextObject, EbpfVm, ExecutionMode},
     },
     solana_sdk_ids::bpf_loader_deprecated,
@@ -179,16 +181,44 @@ pub fn execute<'a, 'b: 'a>(
     let direct_account_pointers_in_program_input = invoke_context
         .get_feature_set()
         .direct_account_pointers_in_program_input;
+    let sbpf_version = executable.get_sbpf_version();
+    let use_abiv2 =
+        invoke_context.get_feature_set().program_runtime_abiv2 && sbpf_version >= SBPFVersion::V4;
 
-    let mut serialize_time = Measure::start("serialize");
-    let (parameter_bytes, regions, accounts_metadata, instruction_data_offset) =
-        serialization::serialize_parameters(
-            &instruction_context,
-            virtual_address_space_adjustments,
-            account_data_direct_mapping,
-            direct_account_pointers_in_program_input,
+    let (parameter_bytes, accounts_metadata, instruction_data_offset, serialize_time) = if use_abiv2
+    {
+        invoke_context.region_manager.push_abi_v2(
+            invoke_context.transaction_context,
+            executable.get_config(),
+            sbpf_version,
         )?;
-    serialize_time.stop();
+        let param_bytes = AlignedMemory::from_slice(&[]);
+        (param_bytes, Vec::<SerializedAccountMetadata>::new(), 0, 0)
+    } else {
+        let mut serialize_time = Measure::start("serialize");
+        let (parameter_bytes, regions, accounts_metadata, instruction_data_offset) =
+            serialization::serialize_parameters(
+                &instruction_context,
+                virtual_address_space_adjustments,
+                account_data_direct_mapping,
+                direct_account_pointers_in_program_input,
+            )?;
+        invoke_context.region_manager.push_abiv0_or_v1(
+            regions,
+            executable.get_config(),
+            sbpf_version,
+            transaction_context.access_violation_handler(
+                virtual_address_space_adjustments,
+                account_data_direct_mapping,
+            ),
+        );
+        (
+            parameter_bytes,
+            accounts_metadata,
+            instruction_data_offset,
+            serialize_time.end_as_us(),
+        )
+    };
 
     // save the account addresses so in case we hit an AccessViolation error we
     // can map to a more specific error
@@ -416,22 +446,26 @@ pub fn execute<'a, 'b: 'a>(
         )
     }
 
-    let mut deserialize_time = Measure::start("deserialize");
-    let execute_or_deserialize_result = execution_result.and_then(|_| {
-        deserialize_parameters(
-            invoke_context,
-            parameter_bytes.as_slice(),
-            virtual_address_space_adjustments,
-            account_data_direct_mapping,
-        )
-        .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
-    });
-    deserialize_time.stop();
+    let (execute_or_deserialize_result, deserialize_time) = if use_abiv2 {
+        (execution_result, 0)
+    } else {
+        let deserialize_time = Measure::start("deserialize");
+        let execute_or_deserialize_result = execution_result.and_then(|_| {
+            deserialize_parameters(
+                invoke_context,
+                parameter_bytes.as_slice(),
+                virtual_address_space_adjustments,
+                account_data_direct_mapping,
+            )
+            .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
+        });
+        (execute_or_deserialize_result, deserialize_time.end_as_us())
+    };
 
     // Update the timings
     invoke_context.timings.serialize_us += serialize_time.as_us();
     invoke_context.timings.create_vm_us += create_vm_time.as_us();
-    invoke_context.timings.deserialize_us += deserialize_time.as_us();
+    invoke_context.timings.deserialize_us += deserialize_time;
 
     execute_or_deserialize_result
 }
