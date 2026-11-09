@@ -1529,6 +1529,7 @@ mod tests {
             interpreted_invocations: 6.into(),
             total_interpretation_time_us: 7.into(),
             interpretation_time_ema: 300.into(),
+            ..Default::default()
         });
         let unloaded = Arc::new(ProgramCacheEntry {
             program: ProgramCacheEntryType::Unloaded(env.clone()),

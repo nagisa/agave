@@ -5,6 +5,12 @@ pub mod account_loader;
 pub mod account_overrides;
 #[cfg(any(feature = "conformance", feature = "dev-context-only-utils"))]
 pub mod conformance;
+#[cfg(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+))]
+mod jit_comparison;
 pub mod nonce_info;
 pub mod program_loader;
 pub mod rent_calculator;

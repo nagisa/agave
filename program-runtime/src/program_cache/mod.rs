@@ -5,6 +5,12 @@ pub mod entry;
 pub mod env;
 pub mod fork_graph;
 pub mod global;
+#[cfg(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+))]
+pub mod jit_comparison;
 pub mod loading_task;
 pub mod metrics;
 pub mod owner;

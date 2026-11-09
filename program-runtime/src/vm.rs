@@ -187,12 +187,26 @@ pub fn execute<'a, 'b: 'a>(
     invoke_context: &'a mut InvokeContext<'b, 'b>,
     cache_entry: &ProgramCacheEntry,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The executable may be swapped for another compilation of the same program, see
+    // `jit_comparison`.
+    #[cfg(all(
+        feature = "dev-context-only-utils",
+        not(target_os = "windows"),
+        target_arch = "x86_64"
+    ))]
+    let (jit_kind, parrot_executable) = cache_entry.stats.jit_comparison.select();
+    #[cfg(all(
+        feature = "dev-context-only-utils",
+        not(target_os = "windows"),
+        target_arch = "x86_64"
+    ))]
+    let executable = parrot_executable.as_deref().unwrap_or(executable);
     // We dropped the lifetime tracking in the Executor by setting it to 'static,
     // thus we need to reintroduce the correct lifetime of InvokeContext here again.
     let executable = unsafe {
         mem::transmute::<
-            &'a Executable<InvokeContext<'static, 'static>>,
-            &'a Executable<InvokeContext<'b, 'b>>,
+            &Executable<InvokeContext<'static, 'static>>,
+            &Executable<InvokeContext<'b, 'b>>,
         >(executable)
     };
     let log_collector = invoke_context.get_log_collector();
@@ -366,8 +380,36 @@ pub fn execute<'a, 'b: 'a>(
         let this_call_us = this_call_ns / 1000;
         invoke_context.timings.execute_us += this_call_us;
         match execution_mode {
-            ExecutionMode::Interpreted => cache_entry.stats.interpreter_executed(this_call_us),
-            ExecutionMode::Jit => cache_entry.stats.jit_executed(this_call_us),
+            ExecutionMode::Interpreted | ExecutionMode::ParrotInterpreted => {
+                cache_entry.stats.interpreter_executed(this_call_us)
+            }
+            ExecutionMode::Jit => {
+                // The regular stats only track the old JIT, so that they stay comparable.
+                #[cfg(all(
+                    feature = "dev-context-only-utils",
+                    not(target_os = "windows"),
+                    target_arch = "x86_64"
+                ))]
+                if jit_kind == crate::program_cache::jit_comparison::JitKind::Old {
+                    cache_entry.stats.jit_executed(this_call_us);
+                }
+                #[cfg(not(all(
+                    feature = "dev-context-only-utils",
+                    not(target_os = "windows"),
+                    target_arch = "x86_64"
+                )))]
+                cache_entry.stats.jit_executed(this_call_us);
+                #[cfg(all(
+                    feature = "dev-context-only-utils",
+                    not(target_os = "windows"),
+                    target_arch = "x86_64"
+                ))]
+                cache_entry.stats.jit_comparison.executed(
+                    jit_kind,
+                    this_call_ns,
+                    compute_units_consumed,
+                );
+            }
             ExecutionMode::PreferJit => { /* not actually executed? */ }
         }
 

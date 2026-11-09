@@ -208,6 +208,60 @@ pub fn get_mock_transaction_processing_environment() -> TransactionProcessingEnv
     }
 }
 
+/// Marks what has to be shareable between threads when transaction batches get executed on two
+/// threads at once to compare JITs (see `jit_comparison`). Is implemented for everything
+/// otherwise.
+#[cfg(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+))]
+pub trait MaybeSync: Sync {}
+#[cfg(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+))]
+impl<T: Sync + ?Sized> MaybeSync for T {}
+#[cfg(not(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+)))]
+pub trait MaybeSync {}
+#[cfg(not(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+)))]
+impl<T: ?Sized> MaybeSync for T {}
+
+/// Same as [`MaybeSync`], but for what has to be sendable as well.
+#[cfg(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+))]
+pub trait MaybeSendSync: Send + Sync {}
+#[cfg(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+))]
+impl<T: Send + Sync + ?Sized> MaybeSendSync for T {}
+#[cfg(not(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+)))]
+pub trait MaybeSendSync {}
+#[cfg(not(all(
+    feature = "dev-context-only-utils",
+    not(target_os = "windows"),
+    target_arch = "x86_64"
+)))]
+impl<T: ?Sized> MaybeSendSync for T {}
+
 #[cfg_attr(
     feature = "dev-context-only-utils",
     field_qualifiers(slot(pub), epoch(pub), sysvar_cache(pub))
@@ -470,6 +524,122 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
 
     /// Main entrypoint to the SVM.
     pub fn load_and_execute_sanitized_transactions<
+        CB: TransactionProcessingCallback + InvokeContextCallback + MaybeSync,
+    >(
+        &self,
+        callbacks: &CB,
+        sanitized_txs: &[impl SVMTransaction],
+        check_results: Vec<TransactionCheckResult>,
+        environment: &TransactionProcessingEnvironment,
+        config: &TransactionProcessingConfig,
+    ) -> LoadAndExecuteSanitizedTransactionsOutput
+    where
+        FG: MaybeSendSync,
+    {
+        #[cfg(all(
+            feature = "dev-context-only-utils",
+            not(target_os = "windows"),
+            target_arch = "x86_64"
+        ))]
+        if solana_program_runtime::program_cache::jit_comparison::enabled() {
+            return self.load_and_execute_comparing_jits(
+                callbacks,
+                sanitized_txs,
+                check_results,
+                environment,
+                config,
+            );
+        }
+        self.load_and_execute_sanitized_transactions_impl(
+            callbacks,
+            sanitized_txs,
+            check_results,
+            environment,
+            config,
+        )
+    }
+
+    /// Execute the batch under both the old and the parrot JIT at the same time, and log where the
+    /// outcomes differ.
+    ///
+    /// The batch is executed twice from identical inputs, so that one execution cannot affect
+    /// the other. Doing so concurrently keeps either of them from benefiting from the caches the
+    /// other has warmed up, and does not slow down the batch as a whole. The outcome of the old JIT
+    /// is the one returned.
+    #[cfg(all(
+        feature = "dev-context-only-utils",
+        not(target_os = "windows"),
+        target_arch = "x86_64"
+    ))]
+    fn load_and_execute_comparing_jits<
+        CB: TransactionProcessingCallback + InvokeContextCallback + MaybeSync,
+    >(
+        &self,
+        callbacks: &CB,
+        sanitized_txs: &[impl SVMTransaction],
+        check_results: Vec<TransactionCheckResult>,
+        environment: &TransactionProcessingEnvironment,
+        config: &TransactionProcessingConfig,
+    ) -> LoadAndExecuteSanitizedTransactionsOutput
+    where
+        FG: MaybeSendSync,
+    {
+        use {
+            crate::jit_comparison::{Compared, compare_batch, take_tx_timings},
+            solana_program_runtime::program_cache::jit_comparison::{JitKind, with_jit},
+        };
+        // SAFETY: both executions only ever read the transactions through `&`, and the batch
+        // outlives both of them. Some transaction types (e.g. the views into banking stage's
+        // packet memory) are not `Sync` only because of the raw pointers inside them. This is
+        // not a sound thing to do in general, and is the reason why the comparison is a
+        // development tool.
+        struct AssertSync<'a, T>(&'a [T]);
+        unsafe impl<T> Sync for AssertSync<'_, T> {}
+        impl<'a, T> AssertSync<'a, T> {
+            // A method, so that closures capture the whole wrapper rather than the field.
+            fn get(&self) -> &'a [T] {
+                self.0
+            }
+        }
+        let sanitized_txs_shared = AssertSync(sanitized_txs);
+        let run = |kind, check_results| {
+            let sanitized_txs = sanitized_txs_shared.get();
+            with_jit(kind, || {
+                let _ = take_tx_timings();
+                let output = self.load_and_execute_sanitized_transactions_impl(
+                    callbacks,
+                    sanitized_txs,
+                    check_results,
+                    environment,
+                    config,
+                );
+                (output, take_tx_timings())
+            })
+        };
+        let parrot_check_results = check_results.clone();
+        let ((parrot, parrot_timings), (old, old_timings)) = crate::jit_comparison::join_with_helper(
+            || run(JitKind::Parrot, parrot_check_results),
+            || run(JitKind::Old, check_results),
+        );
+        compare_batch(
+            self.slot,
+            sanitized_txs
+                .iter()
+                .zip(&old.processing_results)
+                .zip(&parrot.processing_results)
+                .enumerate()
+                .map(|(index, ((tx, old), parrot))| Compared {
+                    signature: tx.signature(),
+                    old,
+                    old_timing: old_timings.get(index).copied(),
+                    parrot,
+                    parrot_timing: parrot_timings.get(index).copied(),
+                }),
+        );
+        old
+    }
+
+    fn load_and_execute_sanitized_transactions_impl<
         CB: TransactionProcessingCallback + InvokeContextCallback,
     >(
         &self,
@@ -528,6 +698,12 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         // in the same batch may modify the same accounts. Transaction order is
         // preserved within entries written to the ledger.
         for (tx, check_result) in sanitized_txs.iter().zip(check_results) {
+            #[cfg(all(
+                feature = "dev-context-only-utils",
+                not(target_os = "windows"),
+                target_arch = "x86_64"
+            ))]
+            let tx_start = std::time::Instant::now();
             let (validate_result, validate_fees_us) = measure_us!(match check_result {
                 Ok(tx_details) => Self::validate_transaction_nonce_and_fee_payer(
                     &mut account_loader,
@@ -558,6 +734,12 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             execute_timings
                 .saturating_add_in_place(ExecuteTimingType::CollectBalancesUs, collect_balances_us);
 
+            #[cfg(all(
+                feature = "dev-context-only-utils",
+                not(target_os = "windows"),
+                target_arch = "x86_64"
+            ))]
+            let execution_start = std::time::Instant::now();
             let (processing_result, single_execution_us) = measure_us!(match load_result {
                 // Unprocessable transactions always result in an error
                 TransactionLoadResult::Unprocessable(e) => Err(e),
@@ -688,11 +870,26 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                 }
             });
             execution_us = execution_us.saturating_add(single_execution_us);
+            #[cfg(all(
+                feature = "dev-context-only-utils",
+                not(target_os = "windows"),
+                target_arch = "x86_64"
+            ))]
+            let execution_ns = execution_start.elapsed().as_nanos() as u64;
 
             let ((), collect_balances_us) =
                 measure_us!(balance_collector.collect_post_balances(&mut account_loader, tx));
             execute_timings
                 .saturating_add_in_place(ExecuteTimingType::CollectBalancesUs, collect_balances_us);
+            #[cfg(all(
+                feature = "dev-context-only-utils",
+                not(target_os = "windows"),
+                target_arch = "x86_64"
+            ))]
+            crate::jit_comparison::record_tx_timing(crate::jit_comparison::TxTiming {
+                total_ns: tx_start.elapsed().as_nanos() as u64,
+                execution_ns,
+            });
 
             // If this is an all or nothing batch and we failed to process this transaction then we
             // must abort all prior/remaining transactions.

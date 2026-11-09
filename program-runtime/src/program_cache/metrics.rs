@@ -28,6 +28,14 @@ pub struct ProgramStatistics {
     pub total_interpretation_time_us: AtomicU64,
     /// Exponential moving average of the interpreted execution time.
     pub interpretation_time_ema: AtomicU64,
+
+    /// A/B experiment of the old and the parrot JIT.
+    #[cfg(all(
+        feature = "dev-context-only-utils",
+        not(target_os = "windows"),
+        target_arch = "x86_64"
+    ))]
+    pub jit_comparison: crate::program_cache::jit_comparison::JitComparison,
 }
 
 /// Number of compilation observations contributing to the the [`Self::compilation_time_ema`].
@@ -277,6 +285,8 @@ impl<FG: ForkGraph> crate::program_cache::global::ProgramCache<FG> {
         // to the log, we'd rather maintain a continuously updated file instead...
         static ENTRY_STAT_PATH: std::sync::LazyLock<Option<std::ffi::OsString>> =
             std::sync::LazyLock::new(|| std::env::var_os("AGAVE_PROGRAM_CACHE_ENTRY_STATS_PATH"));
+        #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
+        self.output_jit_comparison();
         let Some(stat_path) = &*ENTRY_STAT_PATH else {
             log::trace!("Set AGAVE_PROGRAM_CACHE_ENTRY_STATS_PATH to write per-entry stats");
             return;
@@ -322,6 +332,29 @@ impl<FG: ForkGraph> crate::program_cache::global::ProgramCache<FG> {
             log::info!("Writing entry stats to {stat_path:?} failed: {e:?}");
         } else {
             log::debug!("Entry stats written to {stat_path:?}");
+        }
+    }
+
+    /// Write the per-program comparison of the old and the parrot JIT, see
+    /// [`crate::program_cache::jit_comparison`].
+    #[cfg(all(
+        feature = "dev-context-only-utils",
+        not(target_os = "windows"),
+        target_arch = "x86_64"
+    ))]
+    fn output_jit_comparison(&self) {
+        use crate::program_cache::jit_comparison::{self, JitComparison};
+        let Some(path) = jit_comparison::stats_path() else {
+            return;
+        };
+        let mut output = String::from(JitComparison::CSV_HEADER);
+        for (addr, entry) in self.get_flattened_entries_for_tests() {
+            entry.stats.jit_comparison.write_csv_row(&addr, &mut output);
+        }
+        // Write-then-rename so that the file is never observed half-written.
+        let tmp = std::path::Path::new(path).with_extension("tmp");
+        if let Err(e) = std::fs::write(&tmp, output).and_then(|()| std::fs::rename(&tmp, path)) {
+            log::info!("Writing JIT comparison to {path:?} failed: {e:?}");
         }
     }
 }

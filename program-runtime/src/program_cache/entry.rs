@@ -178,8 +178,13 @@ impl ProgramCacheEntry {
         {
             let jit_compile_time = solana_svm_measure::measure::Measure::start("jit_compile_time");
             executable.jit_compile()?;
-            let jit_compile_time = jit_compile_time.end_as_us();
+            let jit_compile_time_ns = jit_compile_time.end_as_ns();
+            let jit_compile_time = jit_compile_time_ns / 1000;
             entry_stats.jit_compiled(jit_compile_time);
+            #[cfg(feature = "dev-context-only-utils")]
+            entry_stats
+                .jit_comparison
+                .compile(elf_bytes, &executable, jit_compile_time_ns);
             #[cfg(feature = "metrics")]
             {
                 metrics.jit_compile_us = jit_compile_time;
@@ -210,6 +215,12 @@ impl ProgramCacheEntry {
     }
 
     pub fn to_unloaded(&self) -> Option<Self> {
+        #[cfg(all(
+            feature = "dev-context-only-utils",
+            not(target_os = "windows"),
+            target_arch = "x86_64"
+        ))]
+        self.stats.jit_comparison.release();
         let environment = ProgramRuntimeEnvironment::clone(self.program.get_environment()?);
         Some(Self {
             program: ProgramCacheEntryType::Unloaded(environment),
